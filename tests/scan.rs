@@ -257,6 +257,16 @@ fn diff_reports_only_and_mtime_and_honors_ignore() {
         b.to_str().unwrap(),
     ]);
     assert_eq!(code, 1, "{err}\n{out}");
+    let (hcode, human, herr) = run(&["diff", a.to_str().unwrap(), b.to_str().unwrap()]);
+    assert_eq!(hcode, 1, "{herr}\n{human}");
+    assert!(
+        human.contains(&format!("only in A: {} (", a.display())),
+        "{human}"
+    );
+    assert!(
+        !human.lines().any(|line| line.starts_with("only in A (")),
+        "{human}"
+    );
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     let only_a: Vec<&str> = v["only_a"]
         .as_array()
@@ -332,7 +342,7 @@ fn json_and_ndjson_are_distinct_documents() {
 }
 
 #[test]
-fn conflicts_find_cloud_copies_not_chapter_numbers() {
+fn conflicts_report_numbered_copies_even_without_the_original() {
     let t = Temp::new();
     let root = &t.path;
     fs::write(root.join("notes.txt"), b"n").unwrap();
@@ -635,6 +645,14 @@ fn nested_repo_missing_head_does_not_inherit_parent() {
         "{nested}"
     );
     assert!(nested["branch"].is_null(), "{nested}");
+    assert_eq!(nested["broken"], true, "{nested}");
+    let parent_row = v["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == parent.display().to_string())
+        .unwrap();
+    assert_eq!(parent_row["broken"], false, "{parent_row}");
 }
 
 #[test]

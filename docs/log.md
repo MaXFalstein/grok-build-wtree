@@ -8,7 +8,7 @@ A nested directory whose `.git` has no `HEAD` must not inherit the parent reposi
 
 ## Classification
 
-A pair of ordinary folders is still `Identical`, `OriginHasEverything`, or `WorktreeHasUniqueWork` from the file diff. `git_not_a_repo` is a reason. A missing critical git file is `NeedsReview`.
+A pair of ordinary folders is still `Identical`, `OriginHasEverything`, or `WorktreeHasUniqueWork` from the file diff. `git_not_a_repo` is a reason. A missing critical git file is `NeedsReview` and sets `broken` on that repo. For a non-git pair, same-size files with different mtimes are hashed. Equal bytes stay mtime drift. Different bytes are `WorktreeHasUniqueWork` or `NeedsReview`, never `Identical`. The digest is not printed.
 
 Conflict copies on the origin, and conflict copies inside `.git`, are reported and do not by themselves force `NeedsReview`. Worktree conflicts outside `.git` do. iCloud ` N` copies (`N >= 2`) are reported even when the original file is gone.
 

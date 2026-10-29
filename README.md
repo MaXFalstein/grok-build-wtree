@@ -129,9 +129,9 @@ Compares the two trees by relative path. Prints paths only in A, only in B, and 
 `--sizes` and `--mtimes` add the numbers to the human report. JSON always has them. `--no-mtimes` keeps mtime differences out of `changed` (they are counted as `mtime_drift` instead). `-I GLOB` drops matching names. Default dependency directories are not skipped here. Audit skips them on its own.
 
 ```text
-only in A (1): /tmp/a
+only in A: /tmp/a (1)
   file only.txt
-only in B (0): /tmp/b
+only in B: /tmp/b (0)
 changed (1):
   sized.txt (size 1 -> 2)
 counts only_a=1 only_b=0 changed=1 mtime_drift=0
@@ -205,7 +205,7 @@ Loads the same records as `grok`, then classifies every worktree against its ori
 
 | Class | Meaning |
 | --- | --- |
-| `Identical` | Same relative paths and the same file sizes. Mtime drift is noted and does not change the class. Git reports no modified or staged files, so a same-size edit still counts. |
+| `Identical` | Same relative paths and the same bytes. For a git pair, `git status` supplies the content check. For a non-git pair, same-size files whose mtimes differ are hashed (the digest is not printed). Mtime drift with equal bytes is noted and does not change the class. A same-size edit is not Identical. |
 | `OriginHasEverything` | Every worktree path is in the origin at the same size. The origin may have extra paths. |
 | `WorktreeHasUniqueWork` | The worktree has a path the origin lacks, a shared path whose size or kind changed, or git reports a modified or staged file. The origin has no private paths. |
 | `OriginMissing` | The worktree exists and the recorded origin does not. |

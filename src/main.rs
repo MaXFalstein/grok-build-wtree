@@ -32,6 +32,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> ExitCode {
+    // Release builds ignore this. Debug and `cargo test` binaries still honor
+    // it so the panic-to-exit-3 path can be regression tested.
+    #[cfg(debug_assertions)]
     if std::env::var_os("WTREE_TEST_PANIC").is_some() {
         panic!("wtree test panic");
     }

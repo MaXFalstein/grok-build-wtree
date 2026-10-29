@@ -87,6 +87,9 @@ pub struct GitRepoReport {
     pub skeleton: Vec<SkeletonItem>,
     pub missing: Vec<String>,
     pub critical_missing: Vec<String>,
+    /// True when this repo is missing a critical skeleton file or its git dir
+    /// was refused by the deny list. A nested repo with no HEAD sets this.
+    pub broken: bool,
     pub modified: Option<u64>,
     pub staged: Option<u64>,
     pub untracked: Option<u64>,
@@ -301,6 +304,7 @@ pub fn inspect_repo(
         _ => None,
     };
     let _ = diag;
+    let broken = denied_git_dir || !critical_missing.is_empty();
 
     GitRepoReport {
         path: repo.display().to_string(),
@@ -315,6 +319,7 @@ pub fn inspect_repo(
         skeleton,
         missing,
         critical_missing,
+        broken,
         modified,
         staged,
         untracked,
@@ -799,7 +804,7 @@ fn clip(s: &str) -> String {
 }
 
 pub fn broken(report: &GitRepoReport) -> bool {
-    !report.is_repo || !report.critical_missing.is_empty()
+    !report.is_repo || report.broken
 }
 
 pub fn dirty(report: &GitRepoReport) -> bool {
@@ -833,6 +838,7 @@ pub fn render(
             for r in reports {
                 writeln!(out, "repo: {}", r.path)?;
                 writeln!(out, "  is_repo: {}", yes(r.is_repo))?;
+                writeln!(out, "  broken: {}", yes(r.broken))?;
                 writeln!(out, "  bare: {}", yes(r.bare))?;
                 writeln!(
                     out,

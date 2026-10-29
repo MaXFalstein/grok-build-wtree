@@ -23,10 +23,11 @@ pub fn redact_json(value: Value) -> Value {
 fn redact_map(map: Map<String, Value>) -> Map<String, Value> {
     map.into_iter()
         .map(|(k, v)| {
+            let key = redact_urls_in_text(&k);
             if key_is_sensitive(&k) {
-                (k, Value::String(MASK.to_string()))
+                (key, Value::String(MASK.to_string()))
             } else {
-                (k, redact_json(v))
+                (key, redact_json(v))
             }
         })
         .collect()
@@ -92,10 +93,11 @@ pub fn toml_to_json_redacted(value: &toml::Value) -> Value {
         toml::Value::Table(t) => {
             let mut map = Map::new();
             for (k, v) in t {
+                let key = redact_urls_in_text(k);
                 if key_is_sensitive(k) {
-                    map.insert(k.clone(), Value::String(MASK.to_string()));
+                    map.insert(key, Value::String(MASK.to_string()));
                 } else {
-                    map.insert(k.clone(), toml_to_json_redacted(v));
+                    map.insert(key, toml_to_json_redacted(v));
                 }
             }
             Value::Object(map)
@@ -137,5 +139,12 @@ mod tests {
                 .contains("https://***@github.com/org/repo")
         );
         assert!(!redact_urls_in_text("https://github.com/org/repo").contains("***"));
+        let keyed = redact_json(serde_json::json!({
+            "https://ghp_xxx@github.com/org": "keep-me"
+        }));
+        let keyed_s = keyed.to_string();
+        assert!(!keyed_s.contains("ghp_xxx"), "{keyed_s}");
+        assert!(keyed_s.contains("https://***@github.com/org"), "{keyed_s}");
+        assert!(keyed_s.contains("keep-me"), "{keyed_s}");
     }
 }

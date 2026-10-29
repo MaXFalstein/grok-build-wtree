@@ -3,6 +3,7 @@ mod common;
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use common::{git_ok, init_repo, percent_encode, run, Temp};
 
@@ -456,4 +457,110 @@ fn git_metadata_conflict_does_not_force_needs_review() {
     assert_eq!(row["class"], "Identical", "{row}");
     assert!(row["reasons"].to_string().contains("git_conflict"), "{row}");
     assert_eq!(row["counts"]["conflicts"], 0, "{row}");
+}
+
+fn touch_at(path: &Path, stamp: &str) {
+    let status = Command::new("touch")
+        .args(["-t", stamp, path.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+fn plain_pair(home: &Path, id: &str, wt: &Path, origin: &Path) {
+    fs::create_dir_all(home).unwrap();
+    sqlite(
+        &home.join("worktrees.db"),
+        &format!(
+            "CREATE TABLE worktrees (id TEXT, path TEXT, source_repo TEXT, repo_name TEXT, status TEXT);
+             INSERT INTO worktrees VALUES ('{id}', '{}', '{}', '{id}', 'alive');",
+            wt.display(),
+            origin.display()
+        ),
+    );
+}
+
+#[test]
+fn non_git_same_size_edit_is_not_identical() {
+    let t = Temp::new();
+    let home = t.path.join("home");
+    let wt = home.join("worktrees/bytes/wt");
+    let origin = t.path.join("origin");
+    fs::create_dir_all(&wt).unwrap();
+    fs::create_dir_all(&origin).unwrap();
+    fs::write(wt.join("notes.txt"), b"HELLO\n").unwrap();
+    fs::write(origin.join("notes.txt"), b"hello\n").unwrap();
+    touch_at(&wt.join("notes.txt"), "202001010101.00");
+    touch_at(&origin.join("notes.txt"), "202202020202.00");
+    plain_pair(&home, "bytes", &wt, &origin);
+
+    let (code, out, err) = run(&["audit", "--json", "--home", home.to_str().unwrap()]);
+    assert_eq!(code, 1, "{err}\n{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let row = &v["rows"][0];
+    assert_eq!(row["class"], "WorktreeHasUniqueWork", "{row}");
+    assert_ne!(row["class"], "Identical");
+    assert!(
+        row["counts"]["content_changed"].as_u64().unwrap() >= 1,
+        "{row}"
+    );
+    assert!(
+        row["reasons"]
+            .to_string()
+            .contains("content_differs:notes.txt"),
+        "{row}"
+    );
+    assert!(!out.contains("HELLO"), "file bytes leaked\n{out}");
+}
+
+#[test]
+fn non_git_mtime_drift_with_equal_bytes_stays_identical() {
+    let t = Temp::new();
+    let home = t.path.join("home");
+    let wt = home.join("worktrees/drift/wt");
+    let origin = t.path.join("origin");
+    fs::create_dir_all(&wt).unwrap();
+    fs::create_dir_all(&origin).unwrap();
+    fs::write(wt.join("notes.txt"), b"hello\n").unwrap();
+    fs::write(origin.join("notes.txt"), b"hello\n").unwrap();
+    touch_at(&wt.join("notes.txt"), "202001010101.00");
+    touch_at(&origin.join("notes.txt"), "202202020202.00");
+    plain_pair(&home, "drift", &wt, &origin);
+
+    let (code, out, err) = run(&["audit", "--json", "--home", home.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}\n{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let row = &v["rows"][0];
+    assert_eq!(row["class"], "Identical", "{row}");
+    assert_eq!(row["counts"]["content_changed"], 0, "{row}");
+    assert!(row["counts"]["mtime_drift"].as_u64().unwrap() >= 1, "{row}");
+}
+
+#[test]
+fn non_git_content_change_plus_origin_only_file_needs_review() {
+    let t = Temp::new();
+    let home = t.path.join("home");
+    let wt = home.join("worktrees/both/wt");
+    let origin = t.path.join("origin");
+    fs::create_dir_all(&wt).unwrap();
+    fs::create_dir_all(&origin).unwrap();
+    fs::write(wt.join("notes.txt"), b"HELLO\n").unwrap();
+    fs::write(origin.join("notes.txt"), b"hello\n").unwrap();
+    fs::write(origin.join("extra.txt"), b"only-origin\n").unwrap();
+    touch_at(&wt.join("notes.txt"), "202001010101.00");
+    touch_at(&origin.join("notes.txt"), "202202020202.00");
+    plain_pair(&home, "both", &wt, &origin);
+
+    let (code, out, err) = run(&["audit", "--json", "--home", home.to_str().unwrap()]);
+    assert_eq!(code, 1, "{err}\n{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let row = &v["rows"][0];
+    assert_eq!(row["class"], "NeedsReview", "{row}");
+    assert!(row["reasons"].to_string().contains("diverged"), "{row}");
+    assert!(
+        row["reasons"]
+            .to_string()
+            .contains("content_differs:notes.txt"),
+        "{row}"
+    );
 }

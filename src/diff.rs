@@ -3,7 +3,8 @@
 //! Directory mtimes are not compared; creating a file bumps every parent.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use globset::GlobSet;
@@ -65,6 +66,10 @@ pub struct DiffReport {
     pub only_b: Vec<Only>,
     pub changed: Vec<Changed>,
     pub counts: DiffCounts,
+    /// Same-size files whose mtimes differ. Not part of the JSON document.
+    /// Audit hashes these for non-git pairs.
+    #[serde(skip)]
+    pub mtime_drift_paths: Vec<String>,
     pub partial: bool,
     pub error_count: u64,
 }
@@ -114,6 +119,7 @@ pub fn compare(
     let mut only_b = Vec::new();
     let mut changed = Vec::new();
     let mut mtime_drift = 0u64;
+    let mut mtime_drift_paths = Vec::new();
 
     for (path, ma) in &map_a {
         match map_b.get(path) {
@@ -144,6 +150,12 @@ pub fn compare(
                     });
                 } else if mtime_changed {
                     mtime_drift += 1;
+                    if ma.kind == EntryKind::File
+                        && mb.kind == EntryKind::File
+                        && ma.size == mb.size
+                    {
+                        mtime_drift_paths.push(path.clone());
+                    }
                 }
             }
         }
@@ -169,9 +181,43 @@ pub fn compare(
         only_a,
         only_b,
         changed,
+        mtime_drift_paths,
         partial: errors > 0,
         error_count: errors,
     }
+}
+
+/// Streaming content check for two regular files. The digest is not returned
+/// and the bytes are not copied into any report.
+pub fn files_content_differ(a: &Path, b: &Path) -> io::Result<bool> {
+    Ok(stream_hash(a)? != stream_hash(b)?)
+}
+
+fn stream_hash(path: &Path) -> io::Result<(u64, u64)> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let mut file = File::open(path)?;
+    let mut h1: u64 = 0xcbf29ce484222325;
+    let mut h2: u64 = 0x84222325cbf29ce4;
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        for &byte in &buf[..n] {
+            h1 ^= u64::from(byte);
+            h1 = h1.wrapping_mul(0x100000001b3);
+            h2 ^= u64::from(byte);
+            h2 = h2.wrapping_mul(0x00000100000001B3);
+        }
+    }
+    Ok((h1, h2))
 }
 
 fn collect(
@@ -274,11 +320,11 @@ pub fn render(
 ) -> io::Result<()> {
     match mode {
         Render::Human => {
-            writeln!(out, "only in A ({}): {}", report.counts.only_a, report.a)?;
+            writeln!(out, "only in A: {} ({})", report.a, report.counts.only_a)?;
             for item in &report.only_a {
                 writeln!(out, "  {}", format_only(item, show_sizes, show_mtimes))?;
             }
-            writeln!(out, "only in B ({}): {}", report.counts.only_b, report.b)?;
+            writeln!(out, "only in B: {} ({})", report.b, report.counts.only_b)?;
             for item in &report.only_b {
                 writeln!(out, "  {}", format_only(item, show_sizes, show_mtimes))?;
             }

@@ -54,6 +54,8 @@ pub struct Signals {
     pub only_worktree: u64,
     pub only_origin: u64,
     pub size_changed: u64,
+    /// Same-size files whose bytes differ. Used for non-git pairs.
+    pub content_changed: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +69,7 @@ pub struct AuditCounts {
     pub only_worktree: u64,
     pub only_origin: u64,
     pub size_changed: u64,
+    pub content_changed: u64,
     pub mtime_drift: u64,
     pub conflicts: u64,
     pub git_modified: u64,
@@ -144,14 +147,19 @@ pub fn decide(s: &Signals) -> Decision {
             diverged: false,
         };
     }
-    let content = s.git_modified + s.git_staged;
+    let content = s.git_modified + s.git_staged + s.content_changed;
     if s.only_worktree == 0 && s.only_origin == 0 && s.size_changed == 0 && content == 0 {
         return Decision {
             class: Class::Identical,
             diverged: false,
         };
     }
-    if s.only_worktree == 0 && s.size_changed == 0 && content == 0 && s.only_origin > 0 {
+    if s.only_worktree == 0
+        && s.size_changed == 0
+        && s.content_changed == 0
+        && s.git_modified + s.git_staged == 0
+        && s.only_origin > 0
+    {
         return Decision {
             class: Class::OriginHasEverything,
             diverged: false,
@@ -212,6 +220,7 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
         only_worktree: 0,
         only_origin: 0,
         size_changed: 0,
+        content_changed: 0,
         mtime_drift: 0,
         conflicts: 0,
         git_modified: 0,
@@ -262,6 +271,7 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
     let mut only_worktree = 0u64;
     let mut only_origin = 0u64;
     let mut size_changed = 0u64;
+    let mut content_changed = 0u64;
     let mut mtime_drift = 0u64;
     if inspect && wt_probe == Probe::Dir && origin_probe == Probe::Dir {
         if let Some(origin) = &origin {
@@ -293,11 +303,27 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
                 if size_changed > 0 {
                     reasons.push(format!("size_changed:{size_changed}"));
                 }
+                let both_non_git = reasons.iter().any(|r| r == "git_not_a_repo:worktree")
+                    && reasons.iter().any(|r| r == "git_not_a_repo:origin");
+                if both_non_git {
+                    content_changed = hash_drifted_files(
+                        &worktree,
+                        origin,
+                        &diff.mtime_drift_paths,
+                        deny,
+                        diag,
+                        &mut reasons,
+                        &mut mtime_drift,
+                    );
+                }
             }
         }
     }
     if mtime_drift > 0 {
         reasons.push(format!("mtime_drift:{mtime_drift}"));
+    }
+    if content_changed > 0 {
+        reasons.push(format!("content_changed:{content_changed}"));
     }
     if git_modified > 0 {
         reasons.push(format!("git_modified:{git_modified}"));
@@ -308,6 +334,7 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
     counts.only_worktree = only_worktree;
     counts.only_origin = only_origin;
     counts.size_changed = size_changed;
+    counts.content_changed = content_changed;
     counts.mtime_drift = mtime_drift;
 
     let decision = decide(&Signals {
@@ -321,6 +348,7 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
         only_worktree,
         only_origin,
         size_changed,
+        content_changed,
     });
     if decision.diverged {
         reasons.push("diverged".into());
@@ -340,6 +368,46 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
         origin_exists: exists_flag(origin_probe),
         counts,
     }
+}
+
+/// Hash same-size files whose mtimes differ. Returns how many differ or
+/// could not be read. Matching files stay in `mtime_drift`.
+fn hash_drifted_files(
+    worktree: &Path,
+    origin: &Path,
+    rels: &[String],
+    deny: &DenyList,
+    diag: &Diag,
+    reasons: &mut Vec<String>,
+    mtime_drift: &mut u64,
+) -> u64 {
+    let mut changed = 0u64;
+    for rel in rels.iter().take(10_000) {
+        let left = worktree.join(rel);
+        let right = origin.join(rel);
+        if deny.is_denied(&left) || deny.is_denied(&right) {
+            diag.denied(if deny.is_denied(&left) { &left } else { &right });
+            changed += 1;
+            *mtime_drift = mtime_drift.saturating_sub(1);
+            reasons.push(format!("content_unreadable:{rel}"));
+            continue;
+        }
+        match diff::files_content_differ(&left, &right) {
+            Ok(false) => {}
+            Ok(true) => {
+                changed += 1;
+                *mtime_drift = mtime_drift.saturating_sub(1);
+                reasons.push(format!("content_differs:{rel}"));
+            }
+            Err(err) => {
+                diag.io_error(&left, &err);
+                changed += 1;
+                *mtime_drift = mtime_drift.saturating_sub(1);
+                reasons.push(format!("content_unreadable:{rel}"));
+            }
+        }
+    }
+    changed
 }
 
 fn git_side(
@@ -590,6 +658,7 @@ mod tests {
             only_worktree: 0,
             only_origin: 0,
             size_changed: 0,
+            content_changed: 0,
         };
         over(&mut s);
         s
@@ -609,6 +678,22 @@ mod tests {
         assert_eq!(
             decide(&sig(|s| s.size_changed = 1)).class,
             Class::WorktreeHasUniqueWork
+        );
+        assert_eq!(
+            decide(&sig(|s| s.content_changed = 1)).class,
+            Class::WorktreeHasUniqueWork
+        );
+        assert_ne!(
+            decide(&sig(|s| s.content_changed = 1)).class,
+            Class::Identical
+        );
+        assert_eq!(
+            decide(&sig(|s| {
+                s.content_changed = 1;
+                s.only_origin = 1;
+            }))
+            .class,
+            Class::NeedsReview
         );
         assert_eq!(
             decide(&sig(|s| s.git_modified = 1)).class,
