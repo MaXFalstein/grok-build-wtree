@@ -1,9 +1,8 @@
 //! Sync-conflict copies and iCloud placeholder files.
 //!
-//! iCloud's `" 2"` suffix is reported only when the reconstructed original
-//! exists, so a real file named `Chapter 2.txt` is not a finding unless
-//! `Chapter.txt` is also there. Dropbox, Syncthing, and `.icloud` placeholders
-//! are unambiguous and are always reported.
+//! iCloud's `" N"` suffix (`N >= 2`) is reported even when the original is
+//! missing, so a leftover `.git/HEAD 2` is visible. Dropbox, Syncthing, and
+//! `.icloud` placeholders are reported the same way.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -199,9 +198,6 @@ fn consider(
         Ok(c) => (true, mtime_secs(&c.meta)),
         Err(_) => (false, None),
     };
-    if kind == ConflictKind::Icloud && !exists {
-        return;
-    }
     let _ = root;
     out.push(Conflict {
         kind,
@@ -239,14 +235,45 @@ pub fn icloud_placeholder(name: &str) -> Option<String> {
     Some(orig.to_string())
 }
 
-/// `name 2`, `name 2.ext`, `.git 2`, `index 2`, `archive.tar 2.gz`.
+/// `name 2`, `name 3.ext`, `.git 12`, `index 2`, `archive.tar 2.gz`.
+/// The number is any integer `>= 2`, not only 2.
 pub fn icloud_numbered(name: &str) -> Option<String> {
     let (base, ext) = split_final_ext(name);
-    let stem = base.strip_suffix(" 2")?;
+    let (stem, _n) = split_trailing_copy_number(base)?;
     if stem.is_empty() || stem.ends_with(' ') {
         return None;
     }
     Some(format!("{stem}{ext}"))
+}
+
+fn split_trailing_copy_number(base: &str) -> Option<(&str, u32)> {
+    let idx = base.rfind(' ')?;
+    let stem = &base[..idx];
+    let num = &base[idx + 1..];
+    if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = num.parse().ok()?;
+    if n < 2 {
+        return None;
+    }
+    Some((stem, n))
+}
+
+/// Conflict copies of git metadata: anything inside a `.git` directory, or a
+/// sibling whose original name is `.git` (`.git 2`, `.git 3`).
+pub fn is_git_metadata_conflict(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    if p.components().any(|c| c.as_os_str() == ".git") {
+        return true;
+    }
+    let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    match classify_name(name) {
+        Some((_, orig)) => orig == ".git" || orig.starts_with(".git"),
+        None => false,
+    }
 }
 
 fn split_final_ext(name: &str) -> (&str, &str) {
@@ -372,13 +399,18 @@ mod tests {
     #[test]
     fn parsers() {
         assert_eq!(icloud_numbered("notes 2.txt").as_deref(), Some("notes.txt"));
-        assert_eq!(icloud_numbered(".git 2").as_deref(), Some(".git"));
+        assert_eq!(icloud_numbered("notes 3.txt").as_deref(), Some("notes.txt"));
+        assert_eq!(icloud_numbered(".git 12").as_deref(), Some(".git"));
         assert_eq!(icloud_numbered("index 2").as_deref(), Some("index"));
         assert_eq!(
             icloud_numbered("archive.tar 2.gz").as_deref(),
             Some("archive.tar.gz")
         );
-        assert!(icloud_numbered("file 12.txt").is_none());
+        assert_eq!(icloud_numbered("HEAD 2").as_deref(), Some("HEAD"));
+        assert!(icloud_numbered("file2.txt").is_none());
+        assert!(is_git_metadata_conflict("/repo/.git/HEAD 2"));
+        assert!(is_git_metadata_conflict("/repo/.git 3"));
+        assert!(!is_git_metadata_conflict("/repo/notes 2.txt"));
         assert_eq!(
             icloud_placeholder(".video.mov.icloud").as_deref(),
             Some("video.mov")

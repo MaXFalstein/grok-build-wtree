@@ -60,6 +60,8 @@ pub struct GrokReport {
     pub worktrees: Vec<WorktreeRow>,
     pub duplicates: Vec<Duplicate>,
     pub orphaned_sessions: Vec<OrphanSession>,
+    /// `worktrees.db-wal` exists. `immutable=1` does not read it.
+    pub wal_present: bool,
     pub partial: bool,
     pub error_count: u64,
 }
@@ -106,6 +108,14 @@ pub fn load(home: &Path, deny: &DenyList, diag: &Diag) -> GrokReport {
         return empty(&home, diag, before);
     }
     let db_path = home.join("worktrees.db");
+    let wal_path = wal_sibling(&db_path);
+    let wal_present = classify(&wal_path).is_ok();
+    if wal_present {
+        eprintln!(
+            "wtree: {}: a WAL file is present; immutable=1 may miss rows that are only in the WAL",
+            wal_path.display()
+        );
+    }
     let worktrees_root = home.join("worktrees");
     let mut schema = SchemaInfo::default();
     let mut meta = Map::new();
@@ -158,6 +168,7 @@ pub fn load(home: &Path, deny: &DenyList, diag: &Diag) -> GrokReport {
         worktrees,
         duplicates,
         orphaned_sessions: orphans,
+        wal_present,
         partial: errors > 0,
         error_count: errors,
     }
@@ -175,6 +186,7 @@ fn empty(home: &Path, diag: &Diag, before: u64) -> GrokReport {
         worktrees: Vec::new(),
         duplicates: Vec::new(),
         orphaned_sessions: Vec::new(),
+        wal_present: false,
         partial: true,
         error_count: errors.max(1),
     }
@@ -494,14 +506,20 @@ fn project_row(
     let mut session_ids = BTreeSet::new();
     if let Some(s) = db_session {
         if !s.is_empty() {
-            session_ids.insert(s);
+            session_ids.insert(redact_out(&s));
         }
     }
     for session in sessions {
-        let cwd_hit = session.cwd.as_ref().is_some_and(|c| c == &folder);
-        let dec_hit = session.decoded_path.as_ref().is_some_and(|c| c == &folder);
+        let cwd_hit = session
+            .cwd
+            .as_ref()
+            .is_some_and(|c| path_within(c, &folder));
+        let dec_hit = session
+            .decoded_path
+            .as_ref()
+            .is_some_and(|c| path_within(c, &folder));
         if cwd_hit || dec_hit {
-            session_ids.insert(session.id.clone());
+            session_ids.insert(redact_out(&session.id));
         }
     }
 
@@ -532,17 +550,31 @@ fn project_row(
     }
 
     Some(WorktreeRow {
-        id,
-        folder: folder.display().to_string(),
-        relative,
-        origin: origin.map(|p| p.display().to_string()),
+        id: id.map(|s| redact_out(&s)),
+        folder: redact_out(&folder.display().to_string()),
+        relative: relative.map(|s| redact_out(&s)),
+        origin: origin.map(|p| redact_out(&p.display().to_string())),
         origin_exists,
         session_ids: session_ids.into_iter().collect(),
-        status,
-        repo_name,
+        status: status.map(|s| redact_out(&s)),
+        repo_name: repo_name.map(|s| redact_out(&s)),
         flags,
         extra,
     })
+}
+
+fn redact_out(s: &str) -> String {
+    crate::redact::redact_urls_in_text(s)
+}
+
+fn path_within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+fn wal_sibling(db: &Path) -> PathBuf {
+    let mut name = db.as_os_str().to_os_string();
+    name.push("-wal");
+    PathBuf::from(name)
 }
 
 fn first_col(values: &BTreeMap<String, Value>, names: &[&str]) -> Option<String> {
@@ -632,9 +664,6 @@ fn scan_sessions(home: &Path, diag: &Diag) -> Vec<SessionHit> {
     }
     entries.sort();
     for path in entries {
-        if deny_session_path(&path) {
-            continue;
-        }
         let classified = match classify(&path) {
             Ok(c) => c,
             Err(e) => {
@@ -682,11 +711,6 @@ fn scan_sessions(home: &Path, diag: &Diag) -> Vec<SessionHit> {
     hits
 }
 
-fn deny_session_path(path: &Path) -> bool {
-    let _ = path;
-    false
-}
-
 fn is_regular_file(path: &Path) -> bool {
     classify(path)
         .map(|c| c.kind == EntryKind::File)
@@ -727,11 +751,6 @@ fn read_summary(path: &Path, decoded_path: Option<PathBuf>, diag: &Diag) -> Opti
         .and_then(|i| i.get("cwd"))
         .and_then(|v| v.as_str())
         .map(|s| normalize_lexical(Path::new(s)));
-    let source = value
-        .get("source_workspace_dir")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from);
-    let _ = source;
     Some(SessionHit {
         id,
         cwd,
@@ -745,43 +764,43 @@ fn orphan_sessions(
     worktrees_root: &Path,
     deny: &DenyList,
 ) -> Vec<OrphanSession> {
-    let known: BTreeSet<String> = rows.iter().map(|r| r.folder.clone()).collect();
+    let known: Vec<PathBuf> = rows.iter().map(|r| PathBuf::from(&r.folder)).collect();
     let mut orphans = Vec::new();
     for session in sessions {
         let candidates = [session.cwd.clone(), session.decoded_path.clone()];
+        let mut referenced = false;
+        let mut orphan: Option<(&str, PathBuf)> = None;
         for cand in candidates.into_iter().flatten() {
-            if !cand.starts_with(worktrees_root) {
+            if !cand.starts_with(worktrees_root) || deny.is_denied(&cand) {
                 continue;
             }
-            if deny.is_denied(&cand) {
-                continue;
-            }
-            let key = cand.display().to_string();
-            let exists = classify(&cand).is_ok();
-            if !exists {
-                orphans.push(OrphanSession {
-                    session_id: session.id.clone(),
-                    cwd: session.cwd.as_ref().map(|p| p.display().to_string()),
-                    decoded_path: session
-                        .decoded_path
-                        .as_ref()
-                        .map(|p| p.display().to_string()),
-                    reason: "missing_on_disk".into(),
-                });
+            if known.iter().any(|root| path_within(&cand, root)) {
+                referenced = true;
                 break;
             }
-            if !known.contains(&key) {
-                orphans.push(OrphanSession {
-                    session_id: session.id.clone(),
-                    cwd: session.cwd.as_ref().map(|p| p.display().to_string()),
-                    decoded_path: session
-                        .decoded_path
-                        .as_ref()
-                        .map(|p| p.display().to_string()),
-                    reason: "no_worktree_record".into(),
-                });
-                break;
-            }
+            let reason = if classify(&cand).is_ok() {
+                "no_worktree_record"
+            } else {
+                "missing_on_disk"
+            };
+            orphan = Some((reason, cand));
+        }
+        if referenced {
+            continue;
+        }
+        if let Some((reason, _)) = orphan {
+            orphans.push(OrphanSession {
+                session_id: redact_out(&session.id),
+                cwd: session
+                    .cwd
+                    .as_ref()
+                    .map(|p| redact_out(&p.display().to_string())),
+                decoded_path: session
+                    .decoded_path
+                    .as_ref()
+                    .map(|p| redact_out(&p.display().to_string())),
+                reason: reason.into(),
+            });
         }
     }
     orphans.sort_by(|a, b| a.session_id.cmp(&b.session_id));
@@ -824,8 +843,14 @@ pub fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && b[i + 1].is_ascii_hexdigit()
+            && b[i + 2].is_ascii_hexdigit()
+        {
+            let hex = [b[i + 1], b[i + 2]];
+            let digits = std::str::from_utf8(&hex).unwrap_or("");
+            if let Ok(v) = u8::from_str_radix(digits, 16) {
                 out.push(v);
                 i += 3;
                 continue;
@@ -895,6 +920,12 @@ pub fn render(report: &GrokReport, mode: Render, mut out: impl Write) -> io::Res
                     )?;
                 }
             }
+            if report.wal_present {
+                writeln!(
+                    out,
+                    "warning: worktrees.db-wal is present; immutable=1 may miss uncheckpointed rows"
+                )?;
+            }
             writeln!(
                 out,
                 "counts worktrees={} duplicates={} orphans={}",
@@ -938,6 +969,7 @@ pub fn render(report: &GrokReport, mode: Render, mut out: impl Write) -> io::Res
                 "schema": report.schema,
                 "meta": report.meta,
                 "trusted_folders": report.trusted_folders,
+                "wal_present": report.wal_present,
                 "partial": report.partial,
                 "error_count": report.error_count,
                 "counts": {
@@ -965,6 +997,7 @@ fn json_doc(report: &GrokReport) -> Value {
         "worktrees": report.worktrees,
         "duplicates": report.duplicates,
         "orphaned_sessions": report.orphaned_sessions,
+        "wal_present": report.wal_present,
         "partial": report.partial,
         "error_count": report.error_count,
     })
@@ -985,5 +1018,12 @@ mod tests {
     #[test]
     fn percent_decodes_slashes() {
         assert_eq!(percent_decode("%2FUsers%2Fada%2F.grok"), "/Users/ada/.grok");
+    }
+
+    #[test]
+    fn percent_decode_non_ascii_does_not_panic() {
+        let fancy = format!("pre-%{}-post", "é");
+        let decoded = percent_decode(&fancy);
+        assert!(decoded.contains('é'), "{decoded}");
     }
 }

@@ -3,21 +3,15 @@ mod common;
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use common::{git_ok, init_repo, percent_encode, run, Temp};
 
 fn sqlite(db: &Path, sql: &str) {
-    let out = Command::new("sqlite3")
-        .arg(db)
-        .arg(sql)
-        .output()
-        .expect("sqlite3");
-    assert!(
-        out.status.success(),
-        "sqlite: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    if let Some(parent) = db.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    let conn = rusqlite::Connection::open(db).expect("open worktrees.db");
+    conn.execute_batch(sql).expect("sql");
 }
 
 #[test]
@@ -46,7 +40,8 @@ fn grok_discovers_schema_masks_secrets_and_flags_records() {
             status TEXT NOT NULL DEFAULT 'alive',
             session_id TEXT,
             metadata TEXT,
-            api_token TEXT
+            api_token TEXT,
+            homepage TEXT
          );",
     );
     let folder_s = folder.display().to_string().replace('\'', "''");
@@ -55,11 +50,11 @@ fn grok_discovers_schema_masks_secrets_and_flags_records() {
     sqlite(
         &db,
         &format!(
-            "INSERT INTO worktrees (id, path, source_repo, repo_name, status, session_id, metadata, api_token)
+            "INSERT INTO worktrees (id, path, source_repo, repo_name, status, session_id, metadata, api_token, homepage)
              VALUES
-             ('wt-1', '{folder_s}', '{origin_s}', 'repo', 'alive', 'sess-1', '{{\"label\":\"ok\",\"api_token\":\"METATOKENSECRET\"}}', 'DBTOKENSECRET'),
-             ('wt-2', '{folder_s}', '{origin_s}', 'repo', 'alive', NULL, NULL, NULL),
-             ('wt-3', '{stale}', '{origin_s}', 'gone', 'alive', NULL, NULL, NULL);"
+             ('wt-1', '{folder_s}', '{origin_s}', 'repo', 'alive', 'sess-1', '{{\"label\":\"ok\",\"api_token\":\"METATOKENSECRET\"}}', 'DBTOKENSECRET', 'https://ghp_supersecret@github.com/org/repo'),
+             ('wt-2', '{folder_s}', '{origin_s}', 'repo', 'alive', NULL, NULL, NULL, NULL),
+             ('wt-3', '{stale}', '{origin_s}', 'gone', 'alive', NULL, NULL, NULL, NULL);"
         ),
     );
 
@@ -81,6 +76,17 @@ fn grok_discovers_schema_masks_secrets_and_flags_records() {
         .join(percent_encode(&missing.display().to_string()))
         .join("orphan-1");
     fs::create_dir_all(&orphan_dir).unwrap();
+    let nested = home.join("sessions").join("nested-cwd").join("sess-inside");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(
+        nested.join("summary.json"),
+        format!(
+            r#"{{"info":{{"id":"sess-inside","cwd":"{}/src"}}}}"#,
+            folder.display()
+        ),
+    )
+    .unwrap();
+
     fs::write(
         orphan_dir.join("summary.json"),
         format!(
@@ -126,6 +132,7 @@ fn grok_discovers_schema_masks_secrets_and_flags_records() {
         "HUNTER2PASSWORD",
         "METATOKENSECRET",
         "DBTOKENSECRET",
+        "ghp_supersecret",
     ] {
         assert!(!out.contains(secret), "{secret} leaked in stdout\n{out}");
         assert!(!err.contains(secret), "{secret} leaked in stderr\n{err}");
@@ -143,11 +150,14 @@ fn grok_discovers_schema_masks_secrets_and_flags_records() {
     let live = rows.iter().find(|r| r["id"] == "wt-1").unwrap();
     assert_eq!(live["relative"], "group/repo");
     assert_eq!(live["origin_exists"], true);
-    assert!(live["session_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| s == "sess-1"));
+    let ids = live["session_ids"].as_array().unwrap();
+    assert!(ids.iter().any(|s| s == "sess-1"));
+    assert!(
+        ids.iter().any(|s| s == "sess-inside"),
+        "cwd inside the worktree should match: {ids:?}"
+    );
+    assert!(out.contains("https://***@github.com/org/repo"), "{out}");
+    assert!(!out.contains("ghp_supersecret"), "{out}");
     assert!(rows
         .iter()
         .any(|r| r["id"] == "wt-3" && r["flags"].to_string().contains("stale_path")));
@@ -377,4 +387,73 @@ fn audit_identical_only_exits_clean() {
     assert_eq!(code, 0, "{err}\n{out}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["rows"][0]["class"], "Identical");
+}
+
+#[test]
+fn wal_file_is_warned_and_plain_dirs_are_classified() {
+    let t = Temp::new();
+    let home = t.path.join("home");
+    let wt = home.join("worktrees/plain/wt");
+    let origin = t.path.join("origin");
+    fs::create_dir_all(&wt).unwrap();
+    fs::create_dir_all(&origin).unwrap();
+    fs::write(wt.join("README"), b"hello\n").unwrap();
+    fs::write(origin.join("README"), b"hello\n").unwrap();
+    fs::write(origin.join("notes.txt"), b"n").unwrap();
+    fs::write(origin.join("notes 2.txt"), b"n2").unwrap();
+    fs::create_dir_all(&home).unwrap();
+    sqlite(
+        &home.join("worktrees.db"),
+        &format!(
+            "CREATE TABLE worktrees (id TEXT, path TEXT, source_repo TEXT, repo_name TEXT, status TEXT);
+             INSERT INTO worktrees VALUES ('plain', '{}', '{}', 'plain', 'alive');",
+            wt.display(),
+            origin.display()
+        ),
+    );
+    fs::write(home.join("worktrees.db-wal"), b"not-read").unwrap();
+    let (code, out, err) = run(&["grok", "--json", "--home", home.to_str().unwrap()]);
+    assert!(code == 0 || code == 1, "{err}\n{out}");
+    assert!(err.contains("WAL") || err.contains("wal"), "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["wal_present"], true);
+
+    let (code, out, err) = run(&["audit", "--json", "--home", home.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}\n{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let row = &v["rows"][0];
+    assert_eq!(row["class"], "OriginHasEverything", "{row}");
+    let reasons = row["reasons"].to_string();
+    assert!(reasons.contains("git_not_a_repo"), "{reasons}");
+    assert!(reasons.contains("origin_conflict"), "{reasons}");
+    assert!(!reasons.contains("git_missing"), "{reasons}");
+    assert_eq!(row["counts"]["conflicts"], 0, "{row}");
+}
+
+#[test]
+fn git_metadata_conflict_does_not_force_needs_review() {
+    let t = Temp::new();
+    let home = t.path.join("home");
+    let wt = home.join("worktrees/meta/wt");
+    let origin = t.path.join("origin");
+    init_repo(&wt);
+    init_repo(&origin);
+    fs::write(origin.join(".git/HEAD 2"), b"leftover-head").unwrap();
+    fs::create_dir_all(&home).unwrap();
+    sqlite(
+        &home.join("worktrees.db"),
+        &format!(
+            "CREATE TABLE worktrees (id TEXT, path TEXT, source_repo TEXT, repo_name TEXT, status TEXT);
+             INSERT INTO worktrees VALUES ('meta', '{}', '{}', 'meta', 'alive');",
+            wt.display(),
+            origin.display()
+        ),
+    );
+    let (code, out, err) = run(&["audit", "--json", "--home", home.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}\n{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let row = &v["rows"][0];
+    assert_eq!(row["class"], "Identical", "{row}");
+    assert!(row["reasons"].to_string().contains("git_conflict"), "{row}");
+    assert_eq!(row["counts"]["conflicts"], 0, "{row}");
 }

@@ -224,17 +224,15 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
 
     if inspect && wt_probe == Probe::Dir && !deny.is_denied(&worktree) {
         let found = conflicts::scan(std::slice::from_ref(&worktree), deny, diag);
+        counts.conflicts += record_conflicts(&mut reasons, &found.conflicts, "worktree");
         if origin_probe == Probe::Dir {
             if let Some(origin) = &origin {
                 if !deny.is_denied(origin) {
                     let more = conflicts::scan(std::slice::from_ref(origin), deny, diag);
-                    counts.conflicts += more.conflicts.len() as u64;
-                    push_conflict_reasons(&mut reasons, &more.conflicts);
+                    record_conflicts(&mut reasons, &more.conflicts, "origin");
                 }
             }
         }
-        counts.conflicts += found.conflicts.len() as u64;
-        push_conflict_reasons(&mut reasons, &found.conflicts);
     }
 
     let mut git_broken = false;
@@ -362,42 +360,64 @@ fn git_side(
     let mut reasons = Vec::new();
     if repos.is_empty() {
         reasons.push(format!("git_not_a_repo:{label}"));
-        return (true, 0, 0, 0, reasons);
+        return (false, 0, 0, 0, reasons);
     }
     let mut broken = false;
     let mut modified = 0u64;
     let mut staged = 0u64;
     let mut untracked = 0u64;
+    let root_is_repo = repos.iter().any(|r| normalize_lexical(r) == root);
+    if !root_is_repo {
+        reasons.push(format!("git_not_a_repo:{label}"));
+    }
     for repo in &repos {
-        let report = git::inspect_repo(repo, None, false, diag);
+        let report = git::inspect_repo(repo, None, false, deny, diag);
         if normalize_lexical(repo) == root {
             modified = report.modified.unwrap_or(0);
             staged = report.staged.unwrap_or(0);
             untracked = report.untracked.unwrap_or(0);
         }
-        if !report.is_repo {
+        if report.errors.iter().any(|e| e.contains("deny list")) {
             broken = true;
-            reasons.push(format!("git_not_a_repo:{label}:{}", repo.display()));
+            reasons.push(format!("git_dir_denied:{label}"));
         }
         for missing in &report.critical_missing {
             broken = true;
             reasons.push(format!("git_missing:{label}:{missing}"));
         }
-        if normalize_lexical(repo) != root && git::broken(&report) {
-            broken = true;
-        }
     }
     (broken, modified, staged, untracked, reasons)
 }
 
-fn push_conflict_reasons(reasons: &mut Vec<String>, items: &[conflicts::Conflict]) {
-    if items.is_empty() {
-        return;
+/// Worktree conflicts outside `.git` affect the class. Origin conflicts and
+/// anything inside a `.git` directory are reasons only.
+fn record_conflicts(reasons: &mut Vec<String>, items: &[conflicts::Conflict], side: &str) -> u64 {
+    let mut classifying = 0u64;
+    let mut origin_n = 0u64;
+    let mut git_n = 0u64;
+    for c in items {
+        let name = conflict_name(c.kind);
+        if conflicts::is_git_metadata_conflict(&c.path) {
+            git_n += 1;
+            reasons.push(format!("git_conflict:{name}:{side}:{}", c.path));
+        } else if side == "origin" {
+            origin_n += 1;
+            reasons.push(format!("origin_conflict:{name}:{}", c.path));
+        } else {
+            classifying += 1;
+            reasons.push(format!("conflict:{name}:{}", c.path));
+        }
     }
-    reasons.push(format!("conflicts:{}", items.len()));
-    for c in items.iter().take(20) {
-        reasons.push(format!("conflict:{}:{}", conflict_name(c.kind), c.path));
+    if classifying > 0 {
+        reasons.push(format!("conflicts:{classifying}"));
     }
+    if origin_n > 0 {
+        reasons.push(format!("origin_conflicts:{origin_n}"));
+    }
+    if git_n > 0 {
+        reasons.push(format!("git_conflicts:{git_n}"));
+    }
+    classifying
 }
 
 fn conflict_name(k: ConflictKind) -> &'static str {

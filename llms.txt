@@ -1,0 +1,14 @@
+# wtree
+
+Read-only CLI for Grok Build worktrees, origin folders, and git repos in synced directories.
+
+Install: `cargo install --path . --locked`
+Repository: https://github.com/MaXFalstein/grok-build-wtree
+
+Commands: `show`, `stats`, `diff`, `git`, `conflicts`, `grok`, `audit`.
+Machine output: `--json` (one document) or `--ndjson` (one record per line).
+Exit codes: 0 clean, 1 findings, 2 usage, 3 partial scan.
+
+Never writes. Never follows symlinks. Refuses ~/Library, ~/Music, ~/Pictures, ~/Movies, ~/Desktop, ~/Downloads, ~/.Trash, and /Volumes unless `--allow PATH` is passed.
+
+Full reference: README.md

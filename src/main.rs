@@ -21,6 +21,20 @@ use wtree::stats;
 use wtree::{exit_code, Render, EXIT_USAGE};
 
 fn main() -> ExitCode {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+    match result {
+        Ok(code) => code,
+        Err(_) => {
+            eprintln!("wtree: internal error");
+            ExitCode::from(wtree::EXIT_PARTIAL as u8)
+        }
+    }
+}
+
+fn run() -> ExitCode {
+    if std::env::var_os("WTREE_TEST_PANIC").is_some() {
+        panic!("wtree test panic");
+    }
     let cli = Cli::parse();
     let render = if cli.json {
         Render::Json
@@ -62,8 +76,20 @@ fn main() -> ExitCode {
             b,
             sizes,
             mtimes,
+            no_mtimes,
             ignore,
-        } => cmd_diff(&a, &b, sizes, mtimes, &ignore, &deny, render),
+        } => cmd_diff(
+            DiffCmd {
+                a: &a,
+                b: &b,
+                sizes,
+                mtimes,
+                no_mtimes,
+                ignore: &ignore,
+            },
+            &deny,
+            render,
+        ),
         Command::Git {
             paths,
             against,
@@ -136,34 +162,35 @@ fn cmd_stats(paths: &[PathBuf], deny: &DenyList, render: Render) -> i32 {
     exit_code(partial, false)
 }
 
-fn cmd_diff(
-    a: &std::path::Path,
-    b: &std::path::Path,
+struct DiffCmd<'a> {
+    a: &'a std::path::Path,
+    b: &'a std::path::Path,
     sizes: bool,
     mtimes: bool,
-    ignore: &[String],
-    deny: &DenyList,
-    render: Render,
-) -> i32 {
-    let globs = match compile_globs(ignore) {
+    no_mtimes: bool,
+    ignore: &'a [String],
+}
+
+fn cmd_diff(cmd: DiffCmd<'_>, deny: &DenyList, render: Render) -> i32 {
+    let globs = match compile_globs(cmd.ignore) {
         Ok(g) => g,
         Err(msg) => {
             eprintln!("wtree: {msg}");
             return EXIT_USAGE;
         }
     };
-    if let Err(code) = preflight(&[a.to_path_buf(), b.to_path_buf()], deny) {
+    if let Err(code) = preflight(&[cmd.a.to_path_buf(), cmd.b.to_path_buf()], deny) {
         return code;
     }
     let diag = Diag::new();
     let opts = DiffOpts {
         globs: &globs,
-        compare_mtime: true,
+        compare_mtime: !cmd.no_mtimes,
         skip_git: true,
         skip_dir_names: &[],
     };
-    let report = diff::compare(a, b, &opts, deny, &diag);
-    if let Err(e) = diff::render(&report, sizes, mtimes, render, io::stdout().lock()) {
+    let report = diff::compare(cmd.a, cmd.b, &opts, deny, &diag);
+    if let Err(e) = diff::render(&report, cmd.sizes, cmd.mtimes, render, io::stdout().lock()) {
         eprintln!("wtree: write failed: {e}");
         return wtree::EXIT_PARTIAL;
     }
@@ -187,7 +214,7 @@ fn cmd_git(
     let diag = Diag::new();
     let against_repo = if let Some(path) = against {
         match git::primary_repo(path, deny, &diag) {
-            Some(repo) => Some(git::load_head(&repo)),
+            Some(repo) => Some(git::load_head(&repo, deny)),
             None => {
                 diag.error(path, "not a git repository");
                 None
@@ -207,10 +234,22 @@ fn cmd_git(
             &diag,
         );
         if repos.is_empty() {
-            reports.push(git::inspect_repo(path, against_repo.as_ref(), fsck, &diag));
+            reports.push(git::inspect_repo(
+                path,
+                against_repo.as_ref(),
+                fsck,
+                deny,
+                &diag,
+            ));
         } else {
             for repo in repos {
-                reports.push(git::inspect_repo(&repo, against_repo.as_ref(), fsck, &diag));
+                reports.push(git::inspect_repo(
+                    &repo,
+                    against_repo.as_ref(),
+                    fsck,
+                    deny,
+                    &diag,
+                ));
             }
         }
     }
@@ -265,11 +304,6 @@ fn cmd_audit(home: Option<PathBuf>, hold: &[PathBuf], deny: &DenyList, render: R
     if let Err(msg) = guard_root(&home, deny) {
         eprintln!("wtree: {msg}");
         return EXIT_USAGE;
-    }
-    for path in hold {
-        // Holds may name a denied path. That is allowed: audit will not
-        // inspect it. Do not preflight holds against the deny list.
-        let _ = path;
     }
     let diag = Diag::new();
     let report = audit::run(&home, hold, deny, &diag);

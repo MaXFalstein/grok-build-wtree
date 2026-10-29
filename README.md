@@ -30,7 +30,7 @@ Until that tarball exists, install from a checkout with Cargo. `brew install --H
 - It never follows symlinks. A symlink is a single entry, `name -> target`. A symlink `.gitignore` is not read. `worktrees.db`, `trusted_folders.toml`, and `summary.json` are skipped when they are symlinks.
 - It never reads arbitrary file contents. The only bytes it opens are git metadata (the `.git` gitdir pointer, `commondir`, and what the allowlisted git commands themselves read), `.gitignore` files when `--gitignore` is set, `worktrees.db`, `sessions/*/summary.json` and `sessions/*/*/summary.json`, and `trusted_folders.toml`.
 - It only walks paths you pass, plus the git directory those paths point at. A linked worktree's `.git` file names a git dir that may sit outside the worktree. That git dir is read for the `git` command and for audit. Nothing else outside the requested path is opened.
-- A built-in deny list refuses `~/Library` (which includes `CloudStorage` and iCloud's Mobile Documents), `~/Music`, `~/Pictures`, `~/Movies`, `~/Desktop`, and `~/Downloads`. The check is lexical, so a symlink cannot smuggle the walk into those folders. Pass `--allow PATH` to inspect a denied path on purpose. A denied child of an allowed walk is skipped and named on stderr. It is not stated.
+- A built-in deny list refuses `~/Library` (which includes `CloudStorage` and iCloud's Mobile Documents), `~/Music`, `~/Pictures`, `~/Movies`, `~/Desktop`, `~/Downloads`, `~/.Trash`, and `/Volumes`. The check is lexical. A symlink `.git` whose target is on that list is not opened. Pass `--allow PATH` to inspect a denied path on purpose. A denied child of an allowed walk is skipped and named on stderr. It is not stated.
 - Paths are sorted by raw bytes. Output does not depend on `LC_COLLATE`. There is no color and no prompt. The human tree is streamed one directory at a time.
 - Errors (permission denied, a file that vanished mid-walk, an unreadable gitignore) go to stderr. The walk continues.
 - Values whose keys contain `token`, `key`, `secret`, or `password` are printed as `***`. Git remote URLs lose embedded userinfo passwords. Blobs in SQLite are not printed. Session transcripts and `session_summary` text are not printed. Only session ids and working-directory paths are kept.
@@ -57,6 +57,8 @@ Until that tarball exists, install from a checkout with Cargo. `brew install --H
 ~/Movies
 ~/Desktop
 ~/Downloads
+~/.Trash
+/Volumes
 ```
 
 `~/Documents` is not on the list. `$HOME` comes from the environment. If it is unset, the list is empty and the tool says so by not denying anything.
@@ -124,7 +126,7 @@ Compares the two trees by relative path. Prints paths only in A, only in B, and 
 
 `.git` (file or directory) is skipped. A linked worktree stores a gitdir file where the origin stores a gitdir directory, and that difference is not working-tree content. Use `wtree git` for the git directory.
 
-`--sizes` and `--mtimes` add the numbers to the human report. JSON always has them. `-I GLOB` drops matching names. Default dependency directories are not skipped here. Audit skips them on its own.
+`--sizes` and `--mtimes` add the numbers to the human report. JSON always has them. `--no-mtimes` keeps mtime differences out of `changed` (they are counted as `mtime_drift` instead). `-I GLOB` drops matching names. Default dependency directories are not skipped here. Audit skips them on its own.
 
 ```text
 only in A (1): /tmp/a
@@ -146,11 +148,11 @@ For each repo:
 - whether it is a git repo, and whether it is bare
 - skeleton check for `HEAD`, `config`, `index`, `objects`, `refs`, `packed-refs`, `info/exclude`, and `hooks`, looking in the git dir and, for a linked worktree, the common dir
 - branch, full HEAD sha, remotes (passwords stripped)
-- counts of modified (index versus worktree), staged (HEAD versus index), and untracked files
+- counts of modified and staged files from `git status --porcelain=v2` (content changes, not stat-only drift) and untracked files. Untracked files alone are not a problem. A missing `packed-refs` is listed and is not a problem.
 - with `--against OTHER_REPO`, ahead/behind when either repository contains both commits
 - with `--fsck`, `git fsck --full --no-dangling`, and the missing or corrupt object ids
 
-`HEAD`, `config`, `objects`, and `refs` are critical. A missing `packed-refs`, `index`, `info/exclude`, or `hooks` is listed and does not by itself fail the command. Exit 1 when a requested path is not a repo, a critical file is missing, the worktree is dirty, or fsck reports an issue.
+`HEAD`, `config`, `objects`, and `refs` are critical. A missing `packed-refs`, `index`, `info/exclude`, or `hooks` is listed and does not by itself fail the command. Exit 1 when a requested path is not a repo, a critical file is missing, a file is modified or staged, or fsck reports an issue. Untracked files do not fail the command. A nested repo with no `HEAD` is reported as that repo, not as its parent: git is given `--git-dir`, `--work-tree`, and `GIT_CEILING_DIRECTORIES`. Every git invocation also passes `-c core.fsmonitor=false` and `-c core.hooksPath=/dev/null`.
 
 ```sh
 wtree git --json --fsck ./repo
@@ -163,7 +165,7 @@ Finds sync-conflict copies and iCloud placeholders.
 
 | Kind | Pattern | Original |
 | --- | --- | --- |
-| `icloud` | `name 2`, `name 2.ext`, `.git 2`, `index 2`, `archive.tar 2.gz` | The name with ` 2` removed from in front of the last extension. Reported only when that original exists, so `Chapter 2.txt` is quiet unless `Chapter.txt` is there too. |
+| `icloud` | `name N`, `name N.ext`, `.git 2`, `HEAD 2`, `archive.tar 3.gz` for any integer `N >= 2` | The name with ` N` removed from in front of the last extension. Reported even when that original is missing, including `.git/HEAD 2` with no `HEAD`. |
 | `icloud_placeholder` | `.video.mov.icloud` | `video.mov`. The file is not downloaded. Reported even when the original is absent. |
 | `dropbox` | `(conflicted copy ...)` | The name with the parenthetical removed. |
 | `syncthing` | `.sync-conflict-DATE-TIME-DEVICE` | The name with that infix removed. |
@@ -175,7 +177,7 @@ The report has the conflict path, the original it shadows, whether the original 
 Reads Grok Build's records:
 
 - `worktrees.db`, opened with SQLite `mode=ro&immutable=1` and `query_only`. The table and columns come from `sqlite_master` and `PRAGMA table_info`. A table named `worktrees` wins. Otherwise the tool picks a table that has both a path column (`path`, `folder`, `worktree_path`, `worktree`) and an origin column (`source_repo`, `origin`, `origin_path`, `repo_path`, `source`, `upstream`).
-- `sessions/<id>/summary.json` and `sessions/<encoded-cwd>/<id>/summary.json`. Only `info.id`, `info.cwd`, and the encoded directory are kept.
+- `sessions/<id>/summary.json` and `sessions/<encoded-cwd>/<id>/summary.json`. Only `info.id`, `info.cwd`, and the encoded directory are kept. A session matches a worktree when its cwd is that folder or a path inside it.
 - `trusted_folders.toml`, redacted.
 
 Each row includes the folder, its path relative to `~/.grok/worktrees`, the recorded origin, whether that origin exists, and the session ids that reference it (the database `session_id`, a matching `info.cwd`, or a matching encoded session directory).
@@ -191,6 +193,10 @@ Flags:
 
 An orphaned session is one whose cwd or encoded directory is under `~/.grok/worktrees` and either does not exist (`missing_on_disk`) or has no database row (`no_worktree_record`). Sessions for ordinary project directories are not orphans.
 
+If `worktrees.db-wal` sits next to the database, `wtree` warns on stderr and sets `wal_present`. `immutable=1` does not read the WAL, so rows that have not been checkpointed can be missing. That warning does not by itself change the exit code.
+
+Every string in the grok report is scanned for `http://`, `https://`, and `ssh://` userinfo. `https://ghp_xxx@github.com/...` becomes `https://***@github.com/...`.
+
 Exit 1 when any row is flagged, any duplicate exists, or any session is orphaned.
 
 ### `wtree audit [--home ~/.grok] [--hold PATH]...`
@@ -203,7 +209,7 @@ Loads the same records as `grok`, then classifies every worktree against its ori
 | `OriginHasEverything` | Every worktree path is in the origin at the same size. The origin may have extra paths. |
 | `WorktreeHasUniqueWork` | The worktree has a path the origin lacks, a shared path whose size or kind changed, or git reports a modified or staged file. The origin has no private paths. |
 | `OriginMissing` | The worktree exists and the recorded origin does not. |
-| `NeedsReview` | Sync conflicts, a broken or missing git repo, a worktree that is missing or is itself a symlink, a denied side, or the trees diverged (each side has something the other does not). |
+| `NeedsReview` | Worktree sync conflicts outside `.git`, a git repo that is missing a critical file, a denied git dir, a worktree that is missing or is itself a symlink, a denied side, or the trees diverged (each side has something the other does not). A folder that is not a git repo is still classified from the file diff. `git_not_a_repo` is a reason. Conflict copies that live only in the origin, and conflict copies inside `.git`, are reasons and do not by themselves select this class. |
 | `OnHold` | The pair overlaps a `--hold` path. |
 
 The working-tree diff used here skips `.git`, `node_modules`, `target`, and `.venv`. Conflict detection does not skip those, so `index 2` inside `.git` still forces `NeedsReview`. Git fsck is not run. Use `wtree git --fsck` for that.
@@ -472,7 +478,7 @@ wtree git --fsck --json PATH
 wtree conflicts --json PATH
 ```
 
-`critical_missing`, a non-empty `fsck.object_ids`, or any conflict line is the thing to report. `modified`, `staged`, and `untracked` are the dirty counts. Do not run `git status` or `git gc` yourself to "confirm". Those can write.
+`critical_missing`, a non-empty `fsck.object_ids`, or a worktree conflict outside `.git` is the thing to report. `modified` and `staged` are content changes. `untracked` is informational. Do not run a plain `git status` or `git gc` to confirm: a normal `git status` refreshes the index. `wtree git` runs status with optional locks disabled.
 
 Compare a worktree with the origin recorded for it:
 
@@ -496,7 +502,7 @@ wtree stats ~/.grok/worktrees
 
 Streaming versus a random-access tree. `show` writes each entry as soon as its directory listing is sorted, so a million files do not have to sit in memory. Unicode and ASCII connectors need to know which sibling is last, and that is known once the directory has been read. `diff` and `audit` keep a map of relative paths because classification needs both trees at once. That map, not the walker, is the memory ceiling.
 
-No file contents, so same-size edits are invisible to `diff`. Audit asks git, which does hash the worktree, and treats a modified or staged path as unique work. Mtime is reported and then ignored for the class. A copied checkout changes every mtime and would otherwise never be `Identical`. Directory mtimes are ignored for the same reason.
+`wtree` does not hash file contents. `diff` compares size and, unless `--no-mtimes`, mtime. A same-size edit is invisible to `diff`. Audit also asks `git status --porcelain=v2` with `GIT_OPTIONAL_LOCKS=0`. That command compares content and does not write a stat refresh, so a byte-identical copy (`cp -a`, ditto, iCloud) is not "modified", while a real edit is. Mtime drift does not change an audit class. Directory mtimes are ignored because creating a file bumps every parent.
 
 `.git` is left out of `diff` and out of the audit file compare. A linked worktree and its origin will never have the same `.git` shape. The skeleton check and `git fsck` cover that metadata instead. Audit also skips `node_modules`, `target`, and `.venv` so a dependency install does not look like source work. `diff` itself does not skip those. Pass `-I` if you want to.
 
@@ -508,4 +514,6 @@ Git is a subprocess, not libgit2 or gitoxide. `git fsck --full --no-dangling` is
 
 Parallelism is level by level for `stats`, and across the top-level path list. Nested rayon joins deadlock, so the walk does not do that. `show`, `diff`, `conflicts`, and `audit` stay single-threaded so their output order stays deterministic.
 
-The deny list is a hard prefix of `$HOME`. It will miss a privacy folder that lives somewhere else, and it will refuse a legitimate project that someone put on the Desktop. `--allow` is the explicit override. The tool would rather skip a directory than raise a macOS privacy prompt.
+The deny list is `/Volumes` plus a hard prefix of `$HOME` (including `~/.Trash`). It will miss a privacy folder that lives somewhere else, and it will refuse a legitimate project that someone put on the Desktop. `--allow` is the explicit override. The tool would rather skip a directory than raise a macOS privacy prompt.
+
+Tests build SQLite fixtures with `rusqlite` (bundled). They do not need the `sqlite3` CLI. They do need `git` on `PATH`. An internal panic is caught and exits 3 instead of 101.

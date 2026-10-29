@@ -9,7 +9,7 @@ rust-version = "1.74"
 description = "Read-only inspector for Grok Build worktrees, their origins, and git repos in synced folders"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/maxfalstein/wtree"
+repository = "https://github.com/MaXFalstein/grok-build-wtree"
 keywords = ["git", "worktree", "grok", "tree"]
 categories = ["command-line-utilities", "development-tools"]
 
@@ -28,6 +28,7 @@ serde_json = "1"
 toml = "0.8"
 
 [dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
 
 [profile.release]

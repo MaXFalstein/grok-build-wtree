@@ -28,8 +28,10 @@ pub struct DenyList {
 impl DenyList {
     pub fn from_allows(allows: &[PathBuf]) -> Self {
         let mut roots = Vec::new();
+        roots.push(PathBuf::from("/Volumes"));
         if let Some(home) = home_dir() {
             let home = normalize_lexical(&home);
+            roots.push(home.join(".Trash"));
             for name in DENY_NAMES {
                 roots.push(home.join(name));
             }
@@ -109,7 +111,7 @@ pub fn guard_root(path: &Path, deny: &DenyList) -> Result<PathBuf, String> {
     let abs = lexical_absolute(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if deny.is_denied(&abs) {
         return Err(format!(
-            "refusing to scan {}: it is on the privacy deny list (~/Library, ~/Music, ~/Pictures, ~/Movies, ~/Desktop, ~/Downloads). Pass --allow {} to inspect it explicitly.",
+            "refusing to scan {}: it is on the privacy deny list (~/Library, ~/Music, ~/Pictures, ~/Movies, ~/Desktop, ~/Downloads, ~/.Trash, /Volumes). Pass --allow {} to inspect it explicitly.",
             abs.display(),
             abs.display()
         ));
@@ -152,5 +154,15 @@ mod tests {
         };
         assert!(!allowed.is_denied(&home.join("Library/Caches/x")));
         assert!(allowed.is_denied(&home.join("Library/Mail")));
+    }
+
+    #[test]
+    fn volumes_and_trash_are_denied() {
+        let deny = DenyList::from_allows(&[]);
+        assert!(deny.is_denied(Path::new("/Volumes/Secret")));
+        if let Some(home) = home_dir() {
+            assert!(deny.is_denied(&home.join(".Trash/file")));
+            assert!(!deny.is_denied(&home.join("Projects/app")));
+        }
     }
 }

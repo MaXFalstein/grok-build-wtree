@@ -73,8 +73,11 @@ pub enum Command {
         #[arg(long)]
         sizes: bool,
         /// Show mtimes in the human report.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "no_mtimes")]
         mtimes: bool,
+        /// Do not treat mtime differences as changes.
+        #[arg(long, conflicts_with = "mtimes")]
+        no_mtimes: bool,
         /// Ignore entries whose name or relative path matches GLOB.
         #[arg(short = 'I', long = "ignore", value_name = "GLOB")]
         ignore: Vec<String>,

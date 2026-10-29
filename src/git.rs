@@ -1,6 +1,8 @@
 //! Read-only git inspection. Every git subprocess is on an allowlist and
-//! runs with `GIT_OPTIONAL_LOCKS=0` and `--no-optional-locks`. The index is
-//! never refreshed. There is no `status`, `gc`, `fetch`, or `update-index`.
+//! runs with `GIT_OPTIONAL_LOCKS=0`, `--no-optional-locks`,
+//! `-c core.fsmonitor=false`, and `-c core.hooksPath=/dev/null`.
+//! Change counts come from `status --porcelain=v2`, which compares content.
+//! The index is not refreshed. There is no `gc`, `fetch`, or `update-index`.
 
 use std::fs;
 use std::io::{self, Write};
@@ -31,9 +33,7 @@ const ALLOWED_GIT: &[&str] = &[
     "rev-parse",
     "symbolic-ref",
     "remote",
-    "diff-files",
-    "diff-index",
-    "ls-files",
+    "status",
     "cat-file",
     "rev-list",
     "fsck",
@@ -196,14 +196,30 @@ pub fn inspect_repo(
     repo: &Path,
     against: Option<&RepoHead>,
     fsck: bool,
+    deny: &DenyList,
     diag: &Diag,
 ) -> GitRepoReport {
     let mut errors = Vec::new();
     let bare = is_bare(repo);
-    let git_dir = resolve_git_dir(repo);
-    let is_repo = git_dir.is_some();
+    let resolved = resolve_git_dir(repo, deny);
+    let (git_dir, denied_git_dir) = match resolved {
+        ResolvedGitDir::Found(path) => (Some(path), false),
+        ResolvedGitDir::Denied(path) => {
+            errors.push(format!(
+                "git dir is on the deny list and was not opened: {}",
+                path.display()
+            ));
+            (None, true)
+        }
+        ResolvedGitDir::Missing => (None, false),
+    };
+    let is_repo = git_dir.is_some() || denied_git_dir || bare;
     let common = git_dir.as_ref().and_then(|g| read_common_dir(g));
-    let skeleton = skeleton_of(git_dir.as_deref(), common.as_deref());
+    let skeleton = if denied_git_dir {
+        Vec::new()
+    } else {
+        skeleton_of(git_dir.as_deref(), common.as_deref())
+    };
     let missing: Vec<String> = skeleton
         .iter()
         .filter(|s| !s.present)
@@ -224,50 +240,59 @@ pub fn inspect_repo(
     let mut untracked = None;
     let mut fsck_report = None;
 
-    if is_repo {
-        match git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+    if git_dir.is_some() {
+        let gd = git_dir.as_deref();
+        match git(repo, gd, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
             Ok(out) if out.status.success() => {
                 branch = Some(stdout_trim(&out));
             }
-            Ok(_) => {
-                detached = true;
-            }
+            Ok(_) => {}
             Err(e) => errors.push(format!("git: {e}")),
         }
-        match git(repo, &["rev-parse", "--verify", "-q", "HEAD"]) {
+        match git(repo, gd, &["rev-parse", "--verify", "-q", "HEAD"]) {
             Ok(out) if out.status.success() => {
                 let sha = stdout_trim(&out);
                 if is_sha(&sha) {
                     head = Some(sha);
+                    if branch.is_none() {
+                        detached = true;
+                    }
                 }
             }
             Ok(_) => {}
             Err(e) => errors.push(format!("git: {e}")),
         }
-        match git(repo, &["remote", "-v"]) {
+        match git(repo, gd, &["remote", "-v"]) {
             Ok(out) if out.status.success() => {
                 remotes = parse_remotes(&stdout_text(&out));
             }
-            Ok(out) => errors.push(clip(&format!("remote: {}", stderr_text(&out)))),
+            Ok(out) => {
+                if critical_missing.is_empty() {
+                    errors.push(clip(&format!("remote: {}", stderr_text(&out))));
+                }
+            }
             Err(e) => errors.push(format!("git: {e}")),
         }
-        modified = count_paths(repo, &["diff-files", "--name-only", "-z"], &mut errors);
-        if head.is_some() {
-            staged = count_paths(
-                repo,
-                &["diff-index", "--cached", "--name-only", "-z", "HEAD"],
-                &mut errors,
-            );
-        } else {
-            staged = count_paths(repo, &["ls-files", "-z"], &mut errors);
-        }
-        untracked = count_paths(
+        match git(
             repo,
-            &["ls-files", "--others", "--exclude-standard", "-z"],
-            &mut errors,
-        );
+            gd,
+            &["status", "--porcelain=v2", "-z", "--untracked-files=normal"],
+        ) {
+            Ok(out) if out.status.success() => {
+                let counts = parse_status_v2_z(&out.stdout);
+                modified = Some(counts.modified);
+                staged = Some(counts.staged);
+                untracked = Some(counts.untracked);
+            }
+            Ok(out) => {
+                if critical_missing.is_empty() {
+                    errors.push(clip(&format!("status: {}", stderr_text(&out))));
+                }
+            }
+            Err(e) => errors.push(format!("git: {e}")),
+        }
         if fsck {
-            fsck_report = Some(run_fsck(repo, diag));
+            fsck_report = Some(run_fsck(repo, gd, diag));
         }
     }
 
@@ -299,12 +324,20 @@ pub fn inspect_repo(
     }
 }
 
-pub fn load_head(repo: &Path) -> RepoHead {
-    let sha = git(repo, &["rev-parse", "--verify", "-q", "HEAD"])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| stdout_trim(&o))
-        .filter(|s| is_sha(s));
+pub fn load_head(repo: &Path, deny: &DenyList) -> RepoHead {
+    let git_dir = match resolve_git_dir(repo, deny) {
+        ResolvedGitDir::Found(path) => Some(path),
+        _ => None,
+    };
+    let sha = git(
+        repo,
+        git_dir.as_deref(),
+        &["rev-parse", "--verify", "-q", "HEAD"],
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .map(|o| stdout_trim(&o))
+    .filter(|s| is_sha(s));
     RepoHead {
         path: repo.to_path_buf(),
         sha,
@@ -396,7 +429,16 @@ fn compare_against(
 
 fn rev_counts(repo: &Path, left: &str, right: &str) -> Option<(u64, u64)> {
     let spec = format!("{left}...{right}");
-    let out = git(repo, &["rev-list", "--left-right", "--count", &spec]).ok()?;
+    let git_dir = match resolve_git_dir(repo, &DenyList::from_allows(&[])) {
+        ResolvedGitDir::Found(path) => Some(path),
+        _ => None,
+    };
+    let out = git(
+        repo,
+        git_dir.as_deref(),
+        &["rev-list", "--left-right", "--count", &spec],
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -409,13 +451,17 @@ fn rev_counts(repo: &Path, left: &str, right: &str) -> Option<(u64, u64)> {
 
 fn object_exists(repo: &Path, sha: &str) -> bool {
     let spec = format!("{sha}^{{commit}}");
-    git(repo, &["cat-file", "-e", &spec])
+    let git_dir = match resolve_git_dir(repo, &DenyList::from_allows(&[])) {
+        ResolvedGitDir::Found(path) => Some(path),
+        _ => None,
+    };
+    git(repo, git_dir.as_deref(), &["cat-file", "-e", &spec])
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
-fn run_fsck(repo: &Path, diag: &Diag) -> FsckReport {
-    match git(repo, &["fsck", "--full", "--no-dangling"]) {
+fn run_fsck(repo: &Path, git_dir: Option<&Path>, diag: &Diag) -> FsckReport {
+    match git(repo, git_dir, &["fsck", "--full", "--no-dangling"]) {
         Ok(out) => {
             let mut text = stdout_text(&out);
             if !stderr_text(&out).is_empty() {
@@ -506,20 +552,6 @@ fn push_oid(oids: &mut Vec<String>, cur: &str) {
     }
 }
 
-fn count_paths(repo: &Path, args: &[&str], errors: &mut Vec<String>) -> Option<u64> {
-    match git(repo, args) {
-        Ok(out) => Some(count_z(&out.stdout) as u64),
-        Err(e) => {
-            errors.push(format!("git {}: {e}", args.first().unwrap_or(&"?")));
-            None
-        }
-    }
-}
-
-fn count_z(bytes: &[u8]) -> usize {
-    bytes.split(|b| *b == 0).filter(|p| !p.is_empty()).count()
-}
-
 fn skeleton_of(git_dir: Option<&Path>, common: Option<&Path>) -> Vec<SkeletonItem> {
     SKELETON
         .iter()
@@ -540,27 +572,47 @@ fn skeleton_of(git_dir: Option<&Path>, common: Option<&Path>) -> Vec<SkeletonIte
         .collect()
 }
 
-fn resolve_git_dir(repo: &Path) -> Option<PathBuf> {
+enum ResolvedGitDir {
+    Missing,
+    Found(PathBuf),
+    Denied(PathBuf),
+}
+
+fn resolve_git_dir(repo: &Path, deny: &DenyList) -> ResolvedGitDir {
     let dot = repo.join(".git");
     if let Ok(c) = classify(&dot) {
         match c.kind {
-            EntryKind::Dir => return Some(dot),
+            EntryKind::Dir => return ResolvedGitDir::Found(dot),
             EntryKind::Symlink => {
-                let target = fs::read_link(&dot).ok()?;
+                let Ok(target) = fs::read_link(&dot) else {
+                    return ResolvedGitDir::Missing;
+                };
                 let joined = if target.is_absolute() {
                     target
                 } else {
                     repo.join(target)
                 };
-                return Some(normalize_lexical(&joined));
+                let abs = normalize_lexical(&joined);
+                if deny.is_denied(&abs) {
+                    return ResolvedGitDir::Denied(abs);
+                }
+                return ResolvedGitDir::Found(abs);
             }
-            EntryKind::File => return read_gitdir_file(&dot, repo),
+            EntryKind::File => {
+                let Some(path) = read_gitdir_file(&dot, repo) else {
+                    return ResolvedGitDir::Missing;
+                };
+                if deny.is_denied(&path) {
+                    return ResolvedGitDir::Denied(path);
+                }
+                return ResolvedGitDir::Found(path);
+            }
         }
     }
     if is_bare(repo) {
-        return Some(repo.to_path_buf());
+        return ResolvedGitDir::Found(repo.to_path_buf());
     }
-    None
+    ResolvedGitDir::Missing
 }
 
 fn read_gitdir_file(dot: &Path, repo: &Path) -> Option<PathBuf> {
@@ -594,7 +646,7 @@ fn read_common_dir(git_dir: &Path) -> Option<PathBuf> {
     Some(normalize_lexical(&joined))
 }
 
-fn git(repo: &Path, args: &[&str]) -> io::Result<Output> {
+fn git(repo: &Path, git_dir: Option<&Path>, args: &[&str]) -> io::Result<Output> {
     let cmd_name = args.first().copied().unwrap_or("");
     if !ALLOWED_GIT.contains(&cmd_name) {
         return Err(io::Error::new(
@@ -604,10 +656,25 @@ fn git(repo: &Path, args: &[&str]) -> io::Result<Output> {
     }
     let mut cmd = Command::new("git");
     cmd.arg("--no-optional-locks")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("-c")
+        .arg("core.fsmonitor=false")
+        .arg("-c")
+        .arg("core.hooksPath=/dev/null");
+    if let Some(dir) = git_dir {
+        cmd.arg("--git-dir").arg(dir);
+        if !is_bare(repo) {
+            cmd.arg("--work-tree").arg(repo);
+        }
+    }
+    cmd.arg("-C").arg(repo).args(args);
+    if let Some(parent) = repo.parent() {
+        if let Ok(ceiling) = lexical_absolute(parent) {
+            // Stop git from walking into a parent repository when this repo
+            // is missing HEAD or is otherwise not a complete git dir.
+            cmd.env("GIT_CEILING_DIRECTORIES", ceiling);
+        }
+    }
+    cmd.env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -619,6 +686,70 @@ fn git(repo: &Path, args: &[&str]) -> io::Result<Output> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd.output()
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatusCounts {
+    pub modified: u64,
+    pub staged: u64,
+    pub untracked: u64,
+}
+
+/// Parse `git status --porcelain=v2 -z` records.
+/// The first XY column is the index (staged). The second is the worktree.
+pub fn parse_status_v2_z(bytes: &[u8]) -> StatusCounts {
+    let mut counts = StatusCounts::default();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rel = bytes[i..]
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(bytes.len() - i);
+        let rec = &bytes[i..i + rel];
+        i += rel + 1;
+        if rec.is_empty() {
+            continue;
+        }
+        match rec[0] {
+            b'?' => counts.untracked += 1,
+            b'!' | b'#' => {}
+            b'1' | b'u' => tally_xy(rec, &mut counts),
+            b'2' => {
+                tally_xy(rec, &mut counts);
+                if i < bytes.len() {
+                    let rel = bytes[i..]
+                        .iter()
+                        .position(|b| *b == 0)
+                        .unwrap_or(bytes.len() - i);
+                    i += rel + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    counts
+}
+
+fn tally_xy(rec: &[u8], counts: &mut StatusCounts) {
+    let text = String::from_utf8_lossy(rec);
+    let mut fields = text.split_whitespace();
+    let _kind = fields.next();
+    let Some(xy) = fields.next() else {
+        return;
+    };
+    let mut chars = xy.chars();
+    let Some(index) = chars.next() else {
+        return;
+    };
+    let Some(worktree) = chars.next() else {
+        return;
+    };
+    if index != '.' && index != '?' {
+        counts.staged += 1;
+    }
+    if worktree != '.' && worktree != '?' {
+        counts.modified += 1;
+    }
 }
 
 fn stdout_text(out: &Output) -> String {
@@ -672,16 +803,19 @@ pub fn broken(report: &GitRepoReport) -> bool {
 }
 
 pub fn dirty(report: &GitRepoReport) -> bool {
-    report.modified.unwrap_or(0) + report.staged.unwrap_or(0) + report.untracked.unwrap_or(0) > 0
+    report.modified.unwrap_or(0) + report.staged.unwrap_or(0) > 0
 }
 
 pub fn problems(reports: &[GitRepoReport]) -> bool {
     if reports.is_empty() {
         return true;
     }
-    reports
-        .iter()
-        .any(|r| broken(r) || dirty(r) || r.fsck.as_ref().is_some_and(|f| !f.issues.is_empty()))
+    reports.iter().any(|r| {
+        broken(r)
+            || dirty(r)
+            || r.fsck.as_ref().is_some_and(|f| !f.issues.is_empty())
+            || r.errors.iter().any(|e| e.contains("deny list"))
+    })
 }
 
 pub fn render(
@@ -811,5 +945,18 @@ mod tests {
             .any(|s| s == "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
         assert!(!report.object_ids.iter().any(|s| s.starts_with("aaaa")));
         assert!(report.issues.iter().any(|i| i.kind == "missing"));
+    }
+
+    #[test]
+    fn status_parser_counts_real_changes_not_headers() {
+        let sample = b"1 .M N... 100644 100644 100644 aaa bbb README\0? extra.txt\0";
+        let counts = parse_status_v2_z(sample);
+        assert_eq!(counts.modified, 1);
+        assert_eq!(counts.staged, 0);
+        assert_eq!(counts.untracked, 1);
+        let both = b"1 MM N... 100644 100644 100644 aaa bbb README\0";
+        let counts = parse_status_v2_z(both);
+        assert_eq!(counts.modified, 1);
+        assert_eq!(counts.staged, 1);
     }
 }

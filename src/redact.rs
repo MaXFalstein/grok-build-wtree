@@ -15,6 +15,7 @@ pub fn redact_json(value: Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(redact_map(map)),
         Value::Array(items) => Value::Array(items.into_iter().map(redact_json).collect()),
+        Value::String(s) => Value::String(redact_urls_in_text(&s)),
         other => other,
     }
 }
@@ -31,26 +32,56 @@ fn redact_map(map: Map<String, Value>) -> Map<String, Value> {
         .collect()
 }
 
+/// Mask every `http://`, `https://`, and `ssh://` userinfo, including a token
+/// with no password (`https://ghp_xxx@github.com`).
 pub fn redact_git_url(url: &str) -> String {
-    let Some(scheme) = url.find("://") else {
-        return url.to_string();
-    };
-    let rest = &url[scheme + 3..];
-    let Some(at) = rest.find('@') else {
-        return url.to_string();
-    };
-    let userinfo = &rest[..at];
-    let host = &rest[at..];
-    if let Some((user, _)) = userinfo.split_once(':') {
-        format!("{}://{user}:{}{host}", &url[..scheme], MASK)
-    } else {
-        url.to_string()
+    redact_urls_in_text(url)
+}
+
+pub fn redact_urls_in_text(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while !rest.is_empty() {
+        let found = ["https://", "http://", "ssh://"]
+            .iter()
+            .filter_map(|scheme| rest.find(scheme).map(|at| (at, *scheme)))
+            .min_by_key(|(at, _)| *at);
+        let Some((at, scheme)) = found else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..at]);
+        let after = &rest[at + scheme.len()..];
+        if let Some(userinfo_end) = userinfo_end(after) {
+            out.push_str(scheme);
+            out.push_str(MASK);
+            rest = &after[userinfo_end..];
+        } else {
+            out.push_str(scheme);
+            rest = after;
+        }
     }
+    out
+}
+
+/// Byte offset of `@` that ends userinfo, if the prefix has no separator.
+fn userinfo_end(rest: &str) -> Option<usize> {
+    let mut saw_user = false;
+    for (off, ch) in rest.char_indices() {
+        if ch == '@' {
+            return if saw_user { Some(off) } else { None };
+        }
+        if ch == '/' || ch == '?' || ch == '#' || ch.is_whitespace() {
+            return None;
+        }
+        saw_user = true;
+    }
+    None
 }
 
 pub fn toml_to_json_redacted(value: &toml::Value) -> Value {
     match value {
-        toml::Value::String(s) => Value::String(s.clone()),
+        toml::Value::String(s) => Value::String(redact_urls_in_text(s)),
         toml::Value::Integer(i) => Value::Number((*i).into()),
         toml::Value::Float(f) => serde_json::Number::from_f64(*f)
             .map(Value::Number)
@@ -91,7 +122,20 @@ mod tests {
         assert!(s.contains("ok"));
         assert_eq!(
             redact_git_url("https://user:ghp_abc@github.com/org/repo.git"),
-            "https://user:***@github.com/org/repo.git"
+            "https://***@github.com/org/repo.git"
         );
+        assert_eq!(
+            redact_git_url("https://ghp_xxx@github.com/org/repo"),
+            "https://***@github.com/org/repo"
+        );
+        assert_eq!(
+            redact_git_url("ssh://git@github.com/org/repo.git"),
+            "ssh://***@github.com/org/repo.git"
+        );
+        assert!(
+            redact_urls_in_text("see https://ghp_xxx@github.com/org/repo now")
+                .contains("https://***@github.com/org/repo")
+        );
+        assert!(!redact_urls_in_text("https://github.com/org/repo").contains("***"));
     }
 }

@@ -355,12 +355,24 @@ fn conflicts_find_cloud_copies_not_chapter_numbers() {
     )
     .unwrap();
     fs::write(root.join(".video.mov.icloud"), b"placeholder").unwrap();
-    fs::write(root.join("Chapter 2.txt"), b"not a conflict").unwrap();
+    fs::write(root.join("Chapter 2.txt"), b"numbered copy").unwrap();
+    fs::write(root.join("notes 3.txt"), b"third").unwrap();
+    fs::create_dir_all(root.join("repo/.git")).unwrap();
+    fs::write(root.join("repo/.git/HEAD 2"), b"leftover").unwrap();
 
     let (code, out, err) = run(&["conflicts", "--json", root.to_str().unwrap()]);
     assert_eq!(code, 1, "{err}\n{out}");
-    assert!(!out.contains("Chapter"), "{out}");
+    assert!(out.contains("Chapter 2.txt"), "{out}");
+    assert!(out.contains("notes 3.txt"), "{out}");
+    assert!(out.contains("HEAD 2"), "{out}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let head = v["conflicts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["path"].as_str().unwrap().ends_with("HEAD 2"));
+    let head = head.expect("HEAD 2");
+    assert_eq!(head["original_exists"], false, "{head}");
     let kinds: Vec<&str> = v["conflicts"]
         .as_array()
         .unwrap()
@@ -438,8 +450,8 @@ fn git_healthy_missing_head_missing_blob_nested_and_ahead() {
     let vulns = nested.join("vulns");
     init_repo(&vulns);
     let (code, out, err) = run(&["git", "--json", nested.to_str().unwrap()]);
-    // The parent lists the nested repo as untracked, so the scan found a problem.
-    assert_eq!(code, 1, "{err}\n{out}");
+    // Untracked files alone are not a problem. The nested repo is untracked in the parent.
+    assert_eq!(code, 0, "{err}\n{out}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["repos"].as_array().unwrap().len(), 2, "{out}");
     let nested_repo = v["repos"]
@@ -548,4 +560,179 @@ fn copy_dir(src: &Path, dst: &Path) {
         .status()
         .unwrap();
     assert!(status.success());
+}
+
+#[test]
+fn stat_only_copy_is_not_modified_and_untracked_is_not_a_problem() {
+    let t = Temp::new();
+    let src = t.path.join("src");
+    init_repo(&src);
+    // pack-refs may be the only copy of the branch. Capture the sha, drop
+    // packed-refs, then write a loose ref so HEAD still resolves.
+    let sha = common::git_ok(&src, &["rev-parse", "HEAD"]);
+    let _ = fs::remove_file(src.join(".git/packed-refs"));
+    common::git_ok(&src, &["update-ref", "refs/heads/main", &sha]);
+    let copied = t.path.join("copied");
+    let status = Command::new("cp")
+        .args(["-a", src.to_str().unwrap(), copied.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let index_before = fs::read(copied.join(".git/index")).unwrap();
+    let (code, out, err) = run(&["git", "--json", copied.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}\n{out}");
+    assert_eq!(fs::read(copied.join(".git/index")).unwrap(), index_before);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let repo = &v["repos"][0];
+    assert_eq!(repo["modified"], 0, "{repo}");
+    assert_eq!(repo["staged"], 0, "{repo}");
+    let missing = repo["missing"].to_string();
+    assert!(missing.contains("packed-refs"), "{missing}");
+    assert!(repo["critical_missing"].as_array().unwrap().is_empty());
+
+    fs::write(src.join("extra.txt"), b"x").unwrap();
+    let (code, out, err) = run(&["git", "--json", src.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}\n{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["repos"][0]["modified"], 0);
+    assert!(v["repos"][0]["untracked"].as_u64().unwrap() >= 1);
+}
+
+#[test]
+fn nested_repo_missing_head_does_not_inherit_parent() {
+    let t = Temp::new();
+    let parent = t.path.join("parent");
+    init_repo(&parent);
+    let child = parent.join("vulns");
+    fs::create_dir_all(child.join(".git")).unwrap();
+    fs::write(
+        child.join(".git/config"),
+        b"[core]\n\trepositoryformatversion = 0\n",
+    )
+    .unwrap();
+    let (code, out, err) = run(&["git", "--json", parent.to_str().unwrap()]);
+    assert_eq!(code, 1, "{err}\n{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let parent_head = v["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == parent.display().to_string())
+        .unwrap()["head"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let nested = v["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"].as_str().unwrap().ends_with("/vulns"))
+        .expect("nested repo");
+    assert!(nested["head"].is_null(), "{nested}");
+    assert_ne!(nested["head"].as_str().unwrap_or(""), parent_head);
+    assert!(
+        nested["critical_missing"].to_string().contains("HEAD"),
+        "{nested}"
+    );
+    assert!(nested["branch"].is_null(), "{nested}");
+}
+
+#[test]
+fn diff_no_mtimes_ignores_timestamp_drift() {
+    let t = Temp::new();
+    let a = t.path.join("a");
+    let b = t.path.join("b");
+    fs::create_dir_all(&a).unwrap();
+    fs::create_dir_all(&b).unwrap();
+    fs::write(a.join("f.txt"), b"same").unwrap();
+    fs::write(b.join("f.txt"), b"same").unwrap();
+    let _ = Command::new("touch")
+        .args(["-t", "202001010101.00", a.join("f.txt").to_str().unwrap()])
+        .status();
+    let _ = Command::new("touch")
+        .args(["-t", "202202020202.00", b.join("f.txt").to_str().unwrap()])
+        .status();
+    let (code, out, err) = run(&[
+        "diff",
+        "--no-mtimes",
+        "--json",
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{err}\n{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["counts"]["changed"], 0);
+    assert!(v["counts"]["mtime_drift"].as_u64().unwrap() >= 1);
+
+    let (code, _, _) = run(&["diff", a.to_str().unwrap(), b.to_str().unwrap()]);
+    assert_eq!(code, 1);
+}
+
+#[test]
+fn volumes_trash_and_denied_gitdir_symlink_are_not_opened() {
+    let (code, out, err) = run(&["show", "/Volumes"]);
+    assert_eq!(code, 2, "{err}\n{out}");
+    assert!(err.contains("deny list"), "{err}");
+
+    let t = Temp::new();
+    let home = t.path.join("home");
+    fs::create_dir_all(home.join(".Trash")).unwrap();
+    fs::write(home.join(".Trash/secret.txt"), b"TRASHSECRET").unwrap();
+    let (code, out, err) = run_with_home(&home, &["show", home.join(".Trash").to_str().unwrap()]);
+    assert_eq!(code, 2, "{err}\n{out}");
+    assert!(!out.contains("TRASHSECRET"), "{out}");
+    assert!(!err.contains("TRASHSECRET"), "{err}");
+
+    let repo = t.path.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    let hidden = home.join("Library/secret.git");
+    fs::create_dir_all(&hidden).unwrap();
+    fs::write(hidden.join("HEAD"), b"GITDIRSECRET").unwrap();
+    std::os::unix::fs::symlink(&hidden, repo.join(".git")).unwrap();
+    let (code, out, err) = run_with_home(&home, &["git", "--json", repo.to_str().unwrap()]);
+    assert_eq!(code, 1, "{err}\n{out}");
+    assert!(!out.contains("GITDIRSECRET"), "{out}{err}");
+    assert!(!err.contains("GITDIRSECRET"), "{err}");
+    assert!(
+        err.contains("deny list") || out.contains("deny list"),
+        "{out}\n{err}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["repos"][0]["head"].is_null(), "{v}");
+}
+
+#[test]
+fn fsmonitor_and_hooks_are_not_run() {
+    let t = Temp::new();
+    let repo = t.path.join("repo");
+    init_repo(&repo);
+    let marker = t.path.join("hook-ran");
+    let script = t.path.join("fsmonitor.sh");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch {}\nexit 0\n", marker.display()),
+    )
+    .unwrap();
+    let _ = Command::new("chmod")
+        .args(["+x", script.to_str().unwrap()])
+        .status();
+    common::git_ok(
+        &repo,
+        &["config", "core.fsmonitor", script.to_str().unwrap()],
+    );
+    let (code, out, err) = run(&["git", "--json", repo.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}\n{out}");
+    assert!(!marker.exists(), "fsmonitor hook ran");
+}
+
+#[test]
+fn internal_panic_exits_3() {
+    let t = Temp::new();
+    let out = Command::new(env!("CARGO_BIN_EXE_wtree"))
+        .arg("show")
+        .arg(t.path.to_str().unwrap())
+        .env("WTREE_TEST_PANIC", "1")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
 }
