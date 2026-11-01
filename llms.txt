@@ -3,7 +3,7 @@
 Read-only CLI for Grok Build worktrees, origin folders, and git repos in synced directories.
 
 Install: `cargo install groktree`
-Repository: https://github.com/MaXFalstein/grok-build-wtree
+Repository: https://github.com/MaXFalstein/groktree
 
 Commands: `show`, `stats`, `diff`, `git`, `conflicts`, `grok`, `audit`.
 Machine output: `--json` (one document) or `--ndjson` (one record per line).

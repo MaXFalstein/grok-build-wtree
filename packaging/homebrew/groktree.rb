@@ -4,17 +4,17 @@
 #   cargo install groktree
 #
 # From this git repository:
-#   cargo install --git https://github.com/MaXFalstein/grok-build-wtree --locked
+#   cargo install --git https://github.com/MaXFalstein/groktree --locked
 #
 # Stable install from the tap:
 #   brew install maxfalstein/groktree/groktree
 class Groktree < Formula
   desc "Read-only inspector for Grok Build worktrees, origins, and git repos"
-  homepage "https://github.com/MaXFalstein/grok-build-wtree"
-  url "https://github.com/MaXFalstein/grok-build-wtree/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "09cde2c72626426951543f97e6bd8850fe83a3372cd399539f2226cf52fc8a9a"
+  homepage "https://github.com/MaXFalstein/groktree"
+  url "https://github.com/MaXFalstein/groktree/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "110c4d76aadc73b5be7de09e48fc1f0150a797b9d0ad7795ec10ffc4e5470faf"
   license any_of: ["MIT", "Apache-2.0"]
-  head "https://github.com/MaXFalstein/grok-build-wtree.git", branch: "main"
+  head "https://github.com/MaXFalstein/groktree.git", branch: "main"
 
   depends_on "rust" => :build
 
