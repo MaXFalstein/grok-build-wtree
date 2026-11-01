@@ -6,6 +6,8 @@ The tool is one binary. It links only the platform C library. SQLite is compiled
 
 ## Install
 
+Requires Rust 1.85 or newer (a dependency uses edition 2024). If the build fails with an edition2024 error, run `rustup update`.
+
 From this checkout:
 
 ```sh
