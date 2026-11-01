@@ -6,7 +6,7 @@ The tool is one binary. It links only the platform C library. SQLite is compiled
 
 ## Install
 
-Requires Rust 1.85 or newer (a dependency uses edition 2024). If the build fails with an edition2024 error, run `rustup update`.
+Requires Rust 1.88 or newer (current dependency versions need 1.88). If the build fails, run `rustup update`.
 
 From crates.io:
 
@@ -22,13 +22,13 @@ cargo install --git https://github.com/MaXFalstein/grok-build-wtree --locked
 
 `Cargo.lock` is part of the repo, so `--locked` reproduces the build that the tests ran against.
 
-A Homebrew formula lives at [`packaging/homebrew/groktree.rb`](packaging/homebrew/groktree.rb). After the formula is in a tap and pointed at a release tarball:
+A Homebrew formula lives at [`packaging/homebrew/groktree.rb`](packaging/homebrew/groktree.rb). The formula will land in the [homebrew-groktree](https://github.com/MaXFalstein/homebrew-groktree) tap after the v0.1.0 release:
 
 ```sh
-brew install groktree
+brew install maxfalstein/groktree/groktree
 ```
 
-Until that tarball exists, install from a checkout with Cargo. `brew install --HEAD` works once the formula's `head` URL is the real git remote.
+Until then, install with `cargo install --git https://github.com/MaXFalstein/grok-build-wtree --locked`.
 
 ## Safety guarantees
 
