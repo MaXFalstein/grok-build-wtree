@@ -1,4 +1,4 @@
-# wtree docs
+# groktree docs
 
 The user-facing reference is the repository [README](../README.md). It covers install, every subcommand, the JSON schema, exit codes, and the read-only guarantees.
 

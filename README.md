@@ -1,6 +1,6 @@
-# wtree
+# groktree
 
-`wtree` is a read-only command for inspecting Grok Build worktrees, the origin folders they were cut from, and git repositories that live in cloud-synced directories such as iCloud Drive. It complements the system `tree` command. It does not replace it.
+`groktree` is a read-only command for inspecting Grok Build worktrees, the origin folders they were cut from, and git repositories that live in cloud-synced directories such as iCloud Drive. It complements the system `tree` command. It does not replace it.
 
 The tool is one binary. It links only the platform C library. SQLite is compiled in, so it does not need a system `libsqlite`. Git inspection shells out to the `git` on `PATH`.
 
@@ -8,25 +8,31 @@ The tool is one binary. It links only the platform C library. SQLite is compiled
 
 Requires Rust 1.85 or newer (a dependency uses edition 2024). If the build fails with an edition2024 error, run `rustup update`.
 
-From this checkout:
+From crates.io:
 
 ```sh
-cargo install --path . --locked
+cargo install groktree
+```
+
+From this git repository:
+
+```sh
+cargo install --git https://github.com/MaXFalstein/grok-build-wtree --locked
 ```
 
 `Cargo.lock` is part of the repo, so `--locked` reproduces the build that the tests ran against.
 
-A Homebrew formula lives at [`packaging/homebrew/wtree.rb`](packaging/homebrew/wtree.rb). After the formula is in a tap and pointed at a release tarball:
+A Homebrew formula lives at [`packaging/homebrew/groktree.rb`](packaging/homebrew/groktree.rb). After the formula is in a tap and pointed at a release tarball:
 
 ```sh
-brew install wtree
+brew install groktree
 ```
 
 Until that tarball exists, install from a checkout with Cargo. `brew install --HEAD` works once the formula's `head` URL is the real git remote.
 
 ## Safety guarantees
 
-`wtree` is safe to point at a synced worktree.
+`groktree` is safe to point at a synced worktree.
 
 - It never writes, moves, deletes, or `chmod`s. It never refreshes a git index, runs `git gc`, or takes an optional lock. Every git subprocess is on an allowlist and is started with `--no-optional-locks` and `GIT_OPTIONAL_LOCKS=0`. `GIT_DIR` and `GIT_INDEX_FILE` from the environment are cleared so a parent shell cannot redirect the inspection.
 - It never follows symlinks. A symlink is a single entry, `name -> target`. A symlink `.gitignore` is not read. `worktrees.db`, `trusted_folders.toml`, and `summary.json` are skipped when they are symlinks.
@@ -66,16 +72,16 @@ Until that tarball exists, install from a checkout with Cargo. `brew install --H
 `~/Documents` is not on the list. `$HOME` comes from the environment. If it is unset, the list is empty and the tool says so by not denying anything.
 
 ```sh
-wtree show ~/Library                 # exit 2, nothing is stated
-wtree show ~/Library --allow ~/Library
-wtree show ~                         # walks ~, skips ~/Library, exit 0
+groktree show ~/Library                 # exit 2, nothing is stated
+groktree show ~/Library --allow ~/Library
+groktree show ~                         # walks ~, skips ~/Library, exit 0
 ```
 
 ## Subcommands
 
 Global flags, accepted before or after the subcommand: `--json`, `--ndjson`, `--allow PATH` (repeatable). `--json` and `--ndjson` cannot be combined.
 
-### `wtree show PATH`
+### `groktree show PATH`
 
 Tree view.
 
@@ -106,7 +112,7 @@ find . -print | sed -e 's;[^/]*/;|____;g;s;____|; |;g'
 
 Without `-a`, dotfiles are hidden, which already hides `.git`. With `-a`, `.git` is shown and `.git/objects` is still pruned unless `--no-default-ignores` is set. A symlink prints as `link -> target` and its target is not walked.
 
-### `wtree stats PATH...`
+### `groktree stats PATH...`
 
 Counts every file, directory, and symlink under each path, including hidden and gitignored files. Bytes are the sum of regular-file lengths. Symlink targets are not added. The root directory is included in `dirs`.
 
@@ -122,11 +128,11 @@ Counts every file, directory, and symlink under each path, including hidden and 
 
 Several paths are counted in parallel. One wide tree is counted a directory level at a time, also in parallel. Exit 0 unless a directory cannot be read.
 
-### `wtree diff A B`
+### `groktree diff A B`
 
 Compares the two trees by relative path. Prints paths only in A, only in B, and paths whose kind, symlink target, size, or mtime differs. Directory mtimes are ignored, because creating a file bumps every parent.
 
-`.git` (file or directory) is skipped. A linked worktree stores a gitdir file where the origin stores a gitdir directory, and that difference is not working-tree content. Use `wtree git` for the git directory.
+`.git` (file or directory) is skipped. A linked worktree stores a gitdir file where the origin stores a gitdir directory, and that difference is not working-tree content. Use `groktree git` for the git directory.
 
 `--sizes` and `--mtimes` add the numbers to the human report. JSON always has them. `--no-mtimes` keeps mtime differences out of `changed` (they are counted as `mtime_drift` instead). `-I GLOB` drops matching names. Default dependency directories are not skipped here. Audit skips them on its own.
 
@@ -141,7 +147,7 @@ counts only_a=1 only_b=0 changed=1 mtime_drift=0
 
 Exit 1 when there is any only-in or changed path.
 
-### `wtree git PATH...`
+### `groktree git PATH...`
 
 Finds every repository under each path, including a nested repo such as `vulns/`. Does not follow symlinks and does not descend into a `.git` directory or into a bare repo's object store.
 
@@ -157,11 +163,11 @@ For each repo:
 `HEAD`, `config`, `objects`, and `refs` are critical. A missing `packed-refs`, `index`, `info/exclude`, or `hooks` is listed and does not by itself fail the command. Exit 1 when a requested path is not a repo, a critical file is missing, a file is modified or staged, or fsck reports an issue. Untracked files do not fail the command. A nested repo with no `HEAD` is reported as that repo, not as its parent: git is given `--git-dir`, `--work-tree`, and `GIT_CEILING_DIRECTORIES`. Every git invocation also passes `-c core.fsmonitor=false` and `-c core.hooksPath=/dev/null`.
 
 ```sh
-wtree git --json --fsck ./repo
-wtree git --against /path/to/origin /path/to/worktree
+groktree git --json --fsck ./repo
+groktree git --against /path/to/origin /path/to/worktree
 ```
 
-### `wtree conflicts PATH...`
+### `groktree conflicts PATH...`
 
 Finds sync-conflict copies and iCloud placeholders.
 
@@ -174,7 +180,7 @@ Finds sync-conflict copies and iCloud placeholders.
 
 The report has the conflict path, the original it shadows, whether the original exists, and both mtimes (unix seconds). The walk includes hidden names and `.git`, which is where `index 2` shows up. Exit 1 when any conflict is found.
 
-### `wtree grok [--home ~/.grok]`
+### `groktree grok [--home ~/.grok]`
 
 Reads Grok Build's records:
 
@@ -195,13 +201,13 @@ Flags:
 
 An orphaned session is one whose cwd or encoded directory is under `~/.grok/worktrees` and either does not exist (`missing_on_disk`) or has no database row (`no_worktree_record`). Sessions for ordinary project directories are not orphans.
 
-If `worktrees.db-wal` sits next to the database, `wtree` warns on stderr and sets `wal_present`. `immutable=1` does not read the WAL, so rows that have not been checkpointed can be missing. That warning does not by itself change the exit code.
+If `worktrees.db-wal` sits next to the database, `groktree` warns on stderr and sets `wal_present`. `immutable=1` does not read the WAL, so rows that have not been checkpointed can be missing. That warning does not by itself change the exit code.
 
 Every string in the grok report is scanned for `http://`, `https://`, and `ssh://` userinfo. `https://ghp_xxx@github.com/...` becomes `https://***@github.com/...`.
 
 Exit 1 when any row is flagged, any duplicate exists, or any session is orphaned.
 
-### `wtree audit [--home ~/.grok] [--hold PATH]...`
+### `groktree audit [--home ~/.grok] [--hold PATH]...`
 
 Loads the same records as `grok`, then classifies every worktree against its origin. `--hold PATH` marks that path, anything inside it, and anything that contains it. A held pair is stated (existence only) and then left alone. A denied path is not stated at all.
 
@@ -214,7 +220,7 @@ Loads the same records as `grok`, then classifies every worktree against its ori
 | `NeedsReview` | Worktree sync conflicts outside `.git`, a git repo that is missing a critical file, a denied git dir, a worktree that is missing or is itself a symlink, a denied side, or the trees diverged (each side has something the other does not). A folder that is not a git repo is still classified from the file diff. `git_not_a_repo` is a reason. Conflict copies that live only in the origin, and conflict copies inside `.git`, are reasons and do not by themselves select this class. |
 | `OnHold` | The pair overlaps a `--hold` path. |
 
-The working-tree diff used here skips `.git`, `node_modules`, `target`, and `.venv`. Conflict detection does not skip those, so `index 2` inside `.git` still forces `NeedsReview`. Git fsck is not run. Use `wtree git --fsck` for that.
+The working-tree diff used here skips `.git`, `node_modules`, `target`, and `.venv`. Conflict detection does not skip those, so `index 2` inside `.git` still forces `NeedsReview`. Git fsck is not run. Use `groktree git --fsck` for that.
 
 ```text
 Identical              1
@@ -461,14 +467,14 @@ On the CLI, mtime differences are `changed`. `mtime_drift` is used by audit, whi
 
 `class` is `Identical`, `OriginHasEverything`, `WorktreeHasUniqueWork`, `OriginMissing`, `NeedsReview`, or `OnHold`. Reason strings are stable tokens such as `held`, `origin_missing`, `worktree_symlink`, `conflicts:1`, `conflict:icloud:/path/notes 2.txt`, `git_missing:worktree:HEAD`, `git_not_a_repo:origin`, `diverged`, `only_worktree:N`, `size_changed:N`, `content_changed:N`, `content_differs:PATH` (first 20 paths), `content_differs_total:N`, `content_check_limit:10000`, `content_unchecked:N`, `mtime_drift:N`, and `git_modified:N`. Example paths are capped at 10, conflict lines and `content_differs` paths at 20. Hitting the 10,000-file hash cap also prints one warning line on stderr. NDJSON uses `"type": "row"` and a summary that repeats `summary`.
 
-## Using wtree from AI assistant skills
+## Using groktree from AI assistant skills
 
 Run these from a non-interactive shell. Do not alias them. Prefer `--json` and branch on the exit code: 0 clean, 1 findings, 2 bad invocation, 3 incomplete.
 
 Audit every recorded worktree:
 
 ```sh
-wtree audit --json
+groktree audit --json
 ```
 
 A row of `WorktreeHasUniqueWork` or `NeedsReview` is not safe to delete. `Identical` and `OriginHasEverything` have no unique worktree content. `OnHold` was not inspected. Add `--hold PATH` for a tree you already know you must keep. The command will not open it.
@@ -476,16 +482,16 @@ A row of `WorktreeHasUniqueWork` or `NeedsReview` is not safe to delete. `Identi
 Diagnose one repo, including a nested repo and a linked worktree:
 
 ```sh
-wtree git --fsck --json PATH
-wtree conflicts --json PATH
+groktree git --fsck --json PATH
+groktree conflicts --json PATH
 ```
 
-`critical_missing`, a non-empty `fsck.object_ids`, or a worktree conflict outside `.git` is the thing to report. `modified` and `staged` are content changes. `untracked` is informational. Do not run a plain `git status` or `git gc` to confirm: a normal `git status` refreshes the index. `wtree git` runs status with optional locks disabled.
+`critical_missing`, a non-empty `fsck.object_ids`, or a worktree conflict outside `.git` is the thing to report. `modified` and `staged` are content changes. `untracked` is informational. Do not run a plain `git status` or `git gc` to confirm: a normal `git status` refreshes the index. `groktree git` runs status with optional locks disabled.
 
 Compare a worktree with the origin recorded for it:
 
 ```sh
-wtree diff --json WORKTREE ORIGIN
+groktree diff --json WORKTREE ORIGIN
 ```
 
 `only_a` is only in the worktree. `only_b` is only in the origin. `.git` is already excluded.
@@ -493,9 +499,9 @@ wtree diff --json WORKTREE ORIGIN
 Find leftovers after a cleanup:
 
 ```sh
-wtree grok --json
-wtree conflicts --json ~/.grok/worktrees
-wtree stats ~/.grok/worktrees
+groktree grok --json
+groktree conflicts --json ~/.grok/worktrees
+groktree stats ~/.grok/worktrees
 ```
 
 `stale_path`, `duplicates`, and `orphaned_sessions` are the records that no longer match disk. Conflict copies are the files a sync left behind. `stats` is the size of whatever is still there, including hidden files and git objects.
@@ -504,7 +510,7 @@ wtree stats ~/.grok/worktrees
 
 Streaming versus a random-access tree. `show` writes each entry as soon as its directory listing is sorted, so a million files do not have to sit in memory. Unicode and ASCII connectors need to know which sibling is last, and that is known once the directory has been read. `diff` and `audit` keep a map of relative paths because classification needs both trees at once. That map, not the walker, is the memory ceiling.
 
-`wtree` does not hash file contents. `diff` compares size and, unless `--no-mtimes`, mtime. A same-size edit is invisible to `diff`. Audit also asks `git status --porcelain=v2` with `GIT_OPTIONAL_LOCKS=0`. That command compares content and does not write a stat refresh, so a byte-identical copy (`cp -a`, ditto, iCloud) is not "modified", while a real edit is. Mtime drift does not change an audit class. Directory mtimes are ignored because creating a file bumps every parent.
+`groktree` does not hash file contents. `diff` compares size and, unless `--no-mtimes`, mtime. A same-size edit is invisible to `diff`. Audit also asks `git status --porcelain=v2` with `GIT_OPTIONAL_LOCKS=0`. That command compares content and does not write a stat refresh, so a byte-identical copy (`cp -a`, ditto, iCloud) is not "modified", while a real edit is. Mtime drift does not change an audit class. Directory mtimes are ignored because creating a file bumps every parent.
 
 `.git` is left out of `diff` and out of the audit file compare. A linked worktree and its origin will never have the same `.git` shape. The skeleton check and `git fsck` cover that metadata instead. Audit also skips `node_modules`, `target`, and `.venv` so a dependency install does not look like source work. `diff` itself does not skip those. Pass `-I` if you want to.
 

@@ -1,7 +1,7 @@
 //! Built-in privacy deny list.
 //!
 //! macOS prompts the user the first time a process touches certain home
-//! folders. `wtree` refuses those paths unless the caller passes `--allow`.
+//! folders. `groktree` refuses those paths unless the caller passes `--allow`.
 //! Paths are compared lexically. Symlinks are not resolved, so a link cannot
 //! smuggle the walk into `~/Library`.
 

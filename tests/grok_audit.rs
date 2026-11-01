@@ -47,7 +47,7 @@ fn grok_discovers_schema_masks_secrets_and_flags_records() {
     );
     let folder_s = folder.display().to_string().replace('\'', "''");
     let origin_s = origin.display().to_string().replace('\'', "''");
-    let stale = "/tmp/wtree-stale-does-not-exist";
+    let stale = "/tmp/groktree-stale-does-not-exist";
     sqlite(
         &db,
         &format!(

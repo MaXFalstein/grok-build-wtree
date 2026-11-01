@@ -2,7 +2,7 @@
 resolver = "2"
 
 [package]
-name = "wtree"
+name = "groktree"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
@@ -14,7 +14,7 @@ keywords = ["git", "worktree", "grok", "tree"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
-name = "wtree"
+name = "groktree"
 path = "src/main.rs"
 
 [dependencies]

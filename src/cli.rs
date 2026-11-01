@@ -9,7 +9,7 @@ use crate::show::Style;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "wtree",
+    name = "groktree",
     version,
     about = "Read-only inspector for Grok Build worktrees, origins, and git repos",
     color = ColorChoice::Never,

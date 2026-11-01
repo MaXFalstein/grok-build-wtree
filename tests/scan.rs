@@ -746,10 +746,10 @@ fn fsmonitor_and_hooks_are_not_run() {
 #[test]
 fn internal_panic_exits_3() {
     let t = Temp::new();
-    let out = Command::new(env!("CARGO_BIN_EXE_wtree"))
+    let out = Command::new(env!("CARGO_BIN_EXE_groktree"))
         .arg("show")
         .arg(t.path.to_str().unwrap())
-        .env("WTREE_TEST_PANIC", "1")
+        .env("GROKTREE_TEST_PANIC", "1")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(3));

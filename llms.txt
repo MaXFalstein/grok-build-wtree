@@ -1,8 +1,8 @@
-# wtree
+# groktree
 
 Read-only CLI for Grok Build worktrees, origin folders, and git repos in synced directories.
 
-Install: `cargo install --path . --locked`
+Install: `cargo install groktree`
 Repository: https://github.com/MaXFalstein/grok-build-wtree
 
 Commands: `show`, `stats`, `diff`, `git`, `conflicts`, `grok`, `audit`.

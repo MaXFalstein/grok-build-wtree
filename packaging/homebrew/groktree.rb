@@ -1,11 +1,14 @@
-# Homebrew formula for wtree.
+# Homebrew formula for groktree.
 #
-# From a git checkout the supported install is:
-#   cargo install --path . --locked
+# From crates.io:
+#   cargo install groktree
+#
+# From this git repository:
+#   cargo install --git https://github.com/MaXFalstein/grok-build-wtree --locked
 #
 # For a tap, point `url` at a release tarball and fill in `sha256`, or:
-#   brew install --HEAD ./packaging/homebrew/wtree.rb
-class Wtree < Formula
+#   brew install --HEAD ./packaging/homebrew/groktree.rb
+class Groktree < Formula
   desc "Read-only inspector for Grok Build worktrees, origins, and git repos"
   homepage "https://github.com/MaXFalstein/grok-build-wtree"
   license "MIT"
@@ -19,6 +22,6 @@ class Wtree < Formula
   end
 
   test do
-    assert_match "wtree", shell_output("#{bin}/wtree --version")
+    assert_match "groktree", shell_output("#{bin}/groktree --version")
   end
 end

@@ -112,7 +112,7 @@ pub fn load(home: &Path, deny: &DenyList, diag: &Diag) -> GrokReport {
     let wal_present = classify(&wal_path).is_ok();
     if wal_present {
         eprintln!(
-            "wtree: {}: a WAL file is present; immutable=1 may miss rows that are only in the WAL",
+            "groktree: {}: a WAL file is present; immutable=1 may miss rows that are only in the WAL",
             wal_path.display()
         );
     }

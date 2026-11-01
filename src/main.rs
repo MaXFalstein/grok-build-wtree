@@ -1,4 +1,4 @@
-//! `wtree` entry point. Scan roots on the privacy deny list are rejected
+//! `groktree` entry point. Scan roots on the privacy deny list are rejected
 //! before any filesystem read of those roots.
 
 use std::io::{self, Write};
@@ -8,25 +8,25 @@ use std::process::ExitCode;
 use clap::Parser;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 
-use wtree::audit;
-use wtree::cli::{Cli, Command};
-use wtree::conflicts;
-use wtree::deny::{guard_root, DenyList};
-use wtree::diag::Diag;
-use wtree::diff::{self, DiffOpts};
-use wtree::git::{self, FindOpts};
-use wtree::grok;
-use wtree::show::{self, ShowOpts};
-use wtree::stats;
-use wtree::{exit_code, Render, EXIT_USAGE};
+use groktree::audit;
+use groktree::cli::{Cli, Command};
+use groktree::conflicts;
+use groktree::deny::{guard_root, DenyList};
+use groktree::diag::Diag;
+use groktree::diff::{self, DiffOpts};
+use groktree::git::{self, FindOpts};
+use groktree::grok;
+use groktree::show::{self, ShowOpts};
+use groktree::stats;
+use groktree::{exit_code, Render, EXIT_USAGE};
 
 fn main() -> ExitCode {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
     match result {
         Ok(code) => code,
         Err(_) => {
-            eprintln!("wtree: internal error");
-            ExitCode::from(wtree::EXIT_PARTIAL as u8)
+            eprintln!("groktree: internal error");
+            ExitCode::from(groktree::EXIT_PARTIAL as u8)
         }
     }
 }
@@ -35,8 +35,8 @@ fn run() -> ExitCode {
     // Release builds ignore this. Debug and `cargo test` binaries still honor
     // it so the panic-to-exit-3 path can be regression tested.
     #[cfg(debug_assertions)]
-    if std::env::var_os("WTREE_TEST_PANIC").is_some() {
-        panic!("wtree test panic");
+    if std::env::var_os("GROKTREE_TEST_PANIC").is_some() {
+        panic!("groktree test panic");
     }
     let cli = Cli::parse();
     let render = if cli.json {
@@ -121,12 +121,12 @@ fn cmd_show(cmd: &ShowCmd<'_>, deny: &DenyList, render: Render) -> i32 {
     let globs = match compile_globs(cmd.ignore) {
         Ok(g) => g,
         Err(msg) => {
-            eprintln!("wtree: {msg}");
+            eprintln!("groktree: {msg}");
             return EXIT_USAGE;
         }
     };
     if let Err(msg) = guard_root(cmd.path, deny) {
-        eprintln!("wtree: {msg}");
+        eprintln!("groktree: {msg}");
         return EXIT_USAGE;
     }
     let diag = Diag::new();
@@ -144,8 +144,8 @@ fn cmd_show(cmd: &ShowCmd<'_>, deny: &DenyList, render: Render) -> i32 {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if let Err(e) = show::run(cmd.path, &opts, deny, &diag, render, &mut out) {
-        eprintln!("wtree: write failed: {e}");
-        return wtree::EXIT_PARTIAL;
+        eprintln!("groktree: write failed: {e}");
+        return groktree::EXIT_PARTIAL;
     }
     let _ = out.flush();
     exit_code(diag.partial(), false)
@@ -159,8 +159,8 @@ fn cmd_stats(paths: &[PathBuf], deny: &DenyList, render: Render) -> i32 {
     let rows = stats::scan_many(paths, deny, &diag);
     let partial = diag.partial() || stats::any_partial(&rows);
     if let Err(e) = stats::render(&rows, render, io::stdout().lock()) {
-        eprintln!("wtree: write failed: {e}");
-        return wtree::EXIT_PARTIAL;
+        eprintln!("groktree: write failed: {e}");
+        return groktree::EXIT_PARTIAL;
     }
     exit_code(partial, false)
 }
@@ -178,7 +178,7 @@ fn cmd_diff(cmd: DiffCmd<'_>, deny: &DenyList, render: Render) -> i32 {
     let globs = match compile_globs(cmd.ignore) {
         Ok(g) => g,
         Err(msg) => {
-            eprintln!("wtree: {msg}");
+            eprintln!("groktree: {msg}");
             return EXIT_USAGE;
         }
     };
@@ -194,8 +194,8 @@ fn cmd_diff(cmd: DiffCmd<'_>, deny: &DenyList, render: Render) -> i32 {
     };
     let report = diff::compare(cmd.a, cmd.b, &opts, deny, &diag);
     if let Err(e) = diff::render(&report, cmd.sizes, cmd.mtimes, render, io::stdout().lock()) {
-        eprintln!("wtree: write failed: {e}");
-        return wtree::EXIT_PARTIAL;
+        eprintln!("groktree: write failed: {e}");
+        return groktree::EXIT_PARTIAL;
     }
     exit_code(report.partial || diag.partial(), diff::problems(&report))
 }
@@ -265,8 +265,8 @@ fn cmd_git(
         diag.error_count(),
         io::stdout().lock(),
     ) {
-        eprintln!("wtree: write failed: {e}");
-        return wtree::EXIT_PARTIAL;
+        eprintln!("groktree: write failed: {e}");
+        return groktree::EXIT_PARTIAL;
     }
     exit_code(partial, problems)
 }
@@ -278,8 +278,8 @@ fn cmd_conflicts(paths: &[PathBuf], deny: &DenyList, render: Render) -> i32 {
     let diag = Diag::new();
     let report = conflicts::scan(paths, deny, &diag);
     if let Err(e) = conflicts::render(&report, render, io::stdout().lock()) {
-        eprintln!("wtree: write failed: {e}");
-        return wtree::EXIT_PARTIAL;
+        eprintln!("groktree: write failed: {e}");
+        return groktree::EXIT_PARTIAL;
     }
     exit_code(
         report.partial || diag.partial(),
@@ -290,14 +290,14 @@ fn cmd_conflicts(paths: &[PathBuf], deny: &DenyList, render: Render) -> i32 {
 fn cmd_grok(home: Option<PathBuf>, deny: &DenyList, render: Render) -> i32 {
     let home = home.unwrap_or_else(grok::default_home);
     if let Err(msg) = guard_root(&home, deny) {
-        eprintln!("wtree: {msg}");
+        eprintln!("groktree: {msg}");
         return EXIT_USAGE;
     }
     let diag = Diag::new();
     let report = grok::load(&home, deny, &diag);
     if let Err(e) = grok::render(&report, render, io::stdout().lock()) {
-        eprintln!("wtree: write failed: {e}");
-        return wtree::EXIT_PARTIAL;
+        eprintln!("groktree: write failed: {e}");
+        return groktree::EXIT_PARTIAL;
     }
     exit_code(report.partial || diag.partial(), grok::problems(&report))
 }
@@ -305,14 +305,14 @@ fn cmd_grok(home: Option<PathBuf>, deny: &DenyList, render: Render) -> i32 {
 fn cmd_audit(home: Option<PathBuf>, hold: &[PathBuf], deny: &DenyList, render: Render) -> i32 {
     let home = home.unwrap_or_else(grok::default_home);
     if let Err(msg) = guard_root(&home, deny) {
-        eprintln!("wtree: {msg}");
+        eprintln!("groktree: {msg}");
         return EXIT_USAGE;
     }
     let diag = Diag::new();
     let report = audit::run(&home, hold, deny, &diag);
     if let Err(e) = audit::render(&report, render, io::stdout().lock()) {
-        eprintln!("wtree: write failed: {e}");
-        return wtree::EXIT_PARTIAL;
+        eprintln!("groktree: write failed: {e}");
+        return groktree::EXIT_PARTIAL;
     }
     exit_code(report.partial, audit::problems(&report))
 }
@@ -321,7 +321,7 @@ fn preflight(paths: &[PathBuf], deny: &DenyList) -> Result<(), i32> {
     let mut failed = false;
     for path in paths {
         if let Err(msg) = guard_root(path, deny) {
-            eprintln!("wtree: {msg}");
+            eprintln!("groktree: {msg}");
             failed = true;
         }
     }

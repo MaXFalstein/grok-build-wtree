@@ -46,7 +46,7 @@ impl Diag {
     pub fn error(&self, path: &Path, message: impl Into<String>) {
         let message = message.into();
         let path_s = path.display().to_string();
-        eprintln!("wtree: {path_s}: {message}");
+        eprintln!("groktree: {path_s}: {message}");
         let _ = io::stderr().flush();
         let mut g = self.inner.lock().expect("diag lock");
         g.error_count = g.error_count.saturating_add(1);
@@ -60,7 +60,7 @@ impl Diag {
 
     pub fn denied(&self, path: &Path) {
         let path_s = path.display().to_string();
-        eprintln!("wtree: skipped {path_s}: deny list (pass --allow {path_s} to inspect)");
+        eprintln!("groktree: skipped {path_s}: deny list (pass --allow {path_s} to inspect)");
         let _ = io::stderr().flush();
         let mut g = self.inner.lock().expect("diag lock");
         if !g.denied.iter().any(|d| d == &path_s) {

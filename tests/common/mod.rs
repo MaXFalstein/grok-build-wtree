@@ -19,8 +19,11 @@ impl Temp {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("wtree-test-{}-{}-{n}", std::process::id(), nanos));
+        let path = std::env::temp_dir().join(format!(
+            "groktree-test-{}-{}-{n}",
+            std::process::id(),
+            nanos
+        ));
         fs::create_dir_all(&path).unwrap();
         Self { path }
     }
@@ -37,19 +40,19 @@ impl Drop for Temp {
 }
 
 pub fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_wtree"))
+    let out = Command::new(env!("CARGO_BIN_EXE_groktree"))
         .args(args)
         .output()
-        .expect("spawn wtree");
+        .expect("spawn groktree");
     decode(out)
 }
 
 pub fn run_with_home(home: &Path, args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_wtree"))
+    let out = Command::new(env!("CARGO_BIN_EXE_groktree"))
         .args(args)
         .env("HOME", home)
         .output()
-        .expect("spawn wtree");
+        .expect("spawn groktree");
     decode(out)
 }
 
@@ -64,9 +67,9 @@ fn decode(out: Output) -> (i32, String, String) {
 pub fn git(dir: &Path, args: &[&str]) -> Output {
     Command::new("git")
         .arg("-c")
-        .arg("user.email=wtree-test@example.com")
+        .arg("user.email=groktree-test@example.com")
         .arg("-c")
-        .arg("user.name=wtree-test")
+        .arg("user.name=groktree-test")
         .arg("-C")
         .arg(dir)
         .args(args)

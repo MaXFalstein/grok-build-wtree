@@ -398,7 +398,7 @@ fn content_check_limit_warning(total: usize) -> Option<String> {
     }
     let skipped = total - CONTENT_CHECK_LIMIT;
     Some(format!(
-        "wtree: content check stopped after {CONTENT_CHECK_LIMIT} date-changed files; {skipped} file(s) were not hashed"
+        "groktree: content check stopped after {CONTENT_CHECK_LIMIT} date-changed files; {skipped} file(s) were not hashed"
     ))
 }
 
@@ -816,7 +816,7 @@ mod tests {
         let warning = content_check_limit_warning(CONTENT_CHECK_LIMIT + 3).unwrap();
         assert_eq!(
             warning,
-            "wtree: content check stopped after 10000 date-changed files; 3 file(s) were not hashed"
+            "groktree: content check stopped after 10000 date-changed files; 3 file(s) were not hashed"
         );
         assert!(content_check_limit_warning(CONTENT_CHECK_LIMIT).is_none());
     }

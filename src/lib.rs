@@ -1,6 +1,6 @@
 //! Read-only inspection of Grok Build worktrees, origins, and git repositories.
 //!
-//! `wtree` never writes, never follows symlinks, and never reads arbitrary file
+//! `groktree` never writes, never follows symlinks, and never reads arbitrary file
 //! contents. The only bytes it opens are git metadata, `.gitignore` files when
 //! `--gitignore` is set, `worktrees.db`, `sessions/*/summary.json`, and
 //! `trusted_folders.toml`.
