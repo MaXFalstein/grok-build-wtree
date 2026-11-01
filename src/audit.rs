@@ -382,13 +382,38 @@ const CONTENT_CHECK_LIMIT: usize = 10_000;
 
 /// Record that hashing stopped early. Returns true when any file was skipped.
 fn note_content_check_limit(total: usize, reasons: &mut Vec<String>) -> bool {
-    if total <= CONTENT_CHECK_LIMIT {
+    let Some(warning) = content_check_limit_warning(total) else {
         return false;
-    }
+    };
+    eprintln!("{warning}");
     let skipped = total - CONTENT_CHECK_LIMIT;
     reasons.push(format!("content_check_limit:{CONTENT_CHECK_LIMIT}"));
     reasons.push(format!("content_unchecked:{skipped}"));
     true
+}
+
+fn content_check_limit_warning(total: usize) -> Option<String> {
+    if total <= CONTENT_CHECK_LIMIT {
+        return None;
+    }
+    let skipped = total - CONTENT_CHECK_LIMIT;
+    Some(format!(
+        "wtree: content check stopped after {CONTENT_CHECK_LIMIT} date-changed files; {skipped} file(s) were not hashed"
+    ))
+}
+
+const CONTENT_DIFFERS_LISTED: usize = 20;
+
+/// Keep the first 20 paths and always record the full total.
+fn push_content_differs(reasons: &mut Vec<String>, rels: &[String]) {
+    let total = rels.len();
+    if total == 0 {
+        return;
+    }
+    for rel in rels.iter().take(CONTENT_DIFFERS_LISTED) {
+        reasons.push(format!("content_differs:{rel}"));
+    }
+    reasons.push(format!("content_differs_total:{total}"));
 }
 
 /// Hash same-size files whose mtimes differ. Returns how many differ or
@@ -403,6 +428,7 @@ fn hash_drifted_files(
     mtime_drift: &mut u64,
 ) -> u64 {
     let mut changed = 0u64;
+    let mut differs = Vec::new();
     for rel in rels.iter().take(CONTENT_CHECK_LIMIT) {
         let left = worktree.join(rel);
         let right = origin.join(rel);
@@ -418,7 +444,7 @@ fn hash_drifted_files(
             Ok(true) => {
                 changed += 1;
                 *mtime_drift = mtime_drift.saturating_sub(1);
-                reasons.push(format!("content_differs:{rel}"));
+                differs.push(rel.clone());
             }
             Err(err) => {
                 diag.io_error(&left, &err);
@@ -428,6 +454,7 @@ fn hash_drifted_files(
             }
         }
     }
+    push_content_differs(reasons, &differs);
     changed
 }
 
@@ -786,5 +813,27 @@ mod tests {
         ));
         assert!(reasons.iter().any(|r| r == "content_check_limit:10000"));
         assert!(reasons.iter().any(|r| r == "content_unchecked:3"));
+        let warning = content_check_limit_warning(CONTENT_CHECK_LIMIT + 3).unwrap();
+        assert_eq!(
+            warning,
+            "wtree: content check stopped after 10000 date-changed files; 3 file(s) were not hashed"
+        );
+        assert!(content_check_limit_warning(CONTENT_CHECK_LIMIT).is_none());
+    }
+
+    #[test]
+    fn content_differs_paths_are_capped() {
+        let rels: Vec<String> = (0..25).map(|n| format!("f{n}.txt")).collect();
+        let mut reasons = Vec::new();
+        push_content_differs(&mut reasons, &rels);
+        let listed = reasons
+            .iter()
+            .filter(|r| r.starts_with("content_differs:"))
+            .count();
+        assert_eq!(listed, 20);
+        assert!(reasons.iter().any(|r| r == "content_differs:f0.txt"));
+        assert!(reasons.iter().any(|r| r == "content_differs:f19.txt"));
+        assert!(!reasons.iter().any(|r| r == "content_differs:f20.txt"));
+        assert!(reasons.iter().any(|r| r == "content_differs_total:25"));
     }
 }

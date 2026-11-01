@@ -457,7 +457,7 @@ On the CLI, mtime differences are `changed`. `mtime_drift` is used by audit, whi
 }
 ```
 
-`class` is `Identical`, `OriginHasEverything`, `WorktreeHasUniqueWork`, `OriginMissing`, `NeedsReview`, or `OnHold`. Reason strings are stable tokens such as `held`, `origin_missing`, `worktree_symlink`, `conflicts:1`, `conflict:icloud:/path/notes 2.txt`, `git_missing:worktree:HEAD`, `git_not_a_repo:origin`, `diverged`, `only_worktree:N`, `size_changed:N`, `content_changed:N`, `content_differs:PATH`, `content_check_limit:10000`, `content_unchecked:N`, `mtime_drift:N`, and `git_modified:N`. Example paths are capped at 10, conflict lines at 20. NDJSON uses `"type": "row"` and a summary that repeats `summary`.
+`class` is `Identical`, `OriginHasEverything`, `WorktreeHasUniqueWork`, `OriginMissing`, `NeedsReview`, or `OnHold`. Reason strings are stable tokens such as `held`, `origin_missing`, `worktree_symlink`, `conflicts:1`, `conflict:icloud:/path/notes 2.txt`, `git_missing:worktree:HEAD`, `git_not_a_repo:origin`, `diverged`, `only_worktree:N`, `size_changed:N`, `content_changed:N`, `content_differs:PATH` (first 20 paths), `content_differs_total:N`, `content_check_limit:10000`, `content_unchecked:N`, `mtime_drift:N`, and `git_modified:N`. Example paths are capped at 10, conflict lines and `content_differs` paths at 20. Hitting the 10,000-file hash cap also prints one warning line on stderr. NDJSON uses `"type": "row"` and a summary that repeats `summary`.
 
 ## Using wtree from AI assistant skills
 

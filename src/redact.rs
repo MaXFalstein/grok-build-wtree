@@ -21,16 +21,34 @@ pub fn redact_json(value: Value) -> Value {
 }
 
 fn redact_map(map: Map<String, Value>) -> Map<String, Value> {
-    map.into_iter()
-        .map(|(k, v)| {
-            let key = redact_urls_in_text(&k);
-            if key_is_sensitive(&k) {
-                (key, Value::String(MASK.to_string()))
-            } else {
-                (key, redact_json(v))
-            }
-        })
-        .collect()
+    let mut out = Map::new();
+    for (k, v) in map {
+        let key = redact_urls_in_text(&k);
+        let value = if key_is_sensitive(&k) {
+            Value::String(MASK.to_string())
+        } else {
+            redact_json(v)
+        };
+        insert_distinct(&mut out, key, value);
+    }
+    out
+}
+
+/// Two different keys can redact to the same text. Keep both rows.
+fn insert_distinct(map: &mut Map<String, Value>, key: String, value: Value) {
+    if !map.contains_key(&key) {
+        map.insert(key, value);
+        return;
+    }
+    let mut n = 2u64;
+    loop {
+        let candidate = format!("{key}#{n}");
+        if !map.contains_key(&candidate) {
+            map.insert(candidate, value);
+            return;
+        }
+        n += 1;
+    }
 }
 
 /// Mask every `http://`, `https://`, and `ssh://` userinfo, including a token
@@ -41,28 +59,40 @@ pub fn redact_git_url(url: &str) -> String {
 
 pub fn redact_urls_in_text(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
-    let mut rest = input;
-    while !rest.is_empty() {
-        let found = ["https://", "http://", "ssh://"]
-            .iter()
-            .filter_map(|scheme| rest.find(scheme).map(|at| (at, *scheme)))
-            .min_by_key(|(at, _)| *at);
-        let Some((at, scheme)) = found else {
-            out.push_str(rest);
-            break;
-        };
-        out.push_str(&rest[..at]);
-        let after = &rest[at + scheme.len()..];
-        if let Some(userinfo_end) = userinfo_end(after) {
+    let mut i = 0;
+    while i < input.len() {
+        if let Some(len) = scheme_at(input, i) {
+            let scheme = &input[i..i + len];
+            let after = &input[i + len..];
+            if let Some(at) = userinfo_end(after) {
+                out.push_str(scheme);
+                out.push_str(MASK);
+                i += len + at;
+                continue;
+            }
             out.push_str(scheme);
-            out.push_str(MASK);
-            rest = &after[userinfo_end..];
-        } else {
-            out.push_str(scheme);
-            rest = after;
+            i += len;
+            continue;
         }
+        let ch = input[i..].chars().next().unwrap_or('\u{fffd}');
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
+}
+
+/// Length of `http://`, `https://`, or `ssh://` at `i`, ignoring scheme case.
+fn scheme_at(s: &str, i: usize) -> Option<usize> {
+    let rest = s.get(i..)?;
+    for scheme in ["https://", "http://", "ssh://"] {
+        if rest.len() >= scheme.len()
+            && rest.is_char_boundary(scheme.len())
+            && rest[..scheme.len()].eq_ignore_ascii_case(scheme)
+        {
+            return Some(scheme.len());
+        }
+    }
+    None
 }
 
 /// Byte offset of `@` that ends userinfo, if the prefix has no separator.
@@ -94,11 +124,12 @@ pub fn toml_to_json_redacted(value: &toml::Value) -> Value {
             let mut map = Map::new();
             for (k, v) in t {
                 let key = redact_urls_in_text(k);
-                if key_is_sensitive(k) {
-                    map.insert(key, Value::String(MASK.to_string()));
+                let value = if key_is_sensitive(k) {
+                    Value::String(MASK.to_string())
                 } else {
-                    map.insert(key, toml_to_json_redacted(v));
-                }
+                    toml_to_json_redacted(v)
+                };
+                insert_distinct(&mut map, key, value);
             }
             Value::Object(map)
         }
@@ -146,5 +177,26 @@ mod tests {
         assert!(!keyed_s.contains("ghp_xxx"), "{keyed_s}");
         assert!(keyed_s.contains("https://***@github.com/org"), "{keyed_s}");
         assert!(keyed_s.contains("keep-me"), "{keyed_s}");
+        assert_eq!(
+            redact_git_url("HTTPS://Token@github.com/org/repo"),
+            "HTTPS://***@github.com/org/repo"
+        );
+        assert_eq!(
+            redact_urls_in_text("see HtTpS://ghp_xxx@github.com/org now"),
+            "see HtTpS://***@github.com/org now"
+        );
+        let collided = redact_json(serde_json::json!({
+            "https://aaa@github.com/x": "one",
+            "https://bbb@github.com/x": "two"
+        }));
+        let obj = collided.as_object().unwrap();
+        assert_eq!(obj.len(), 2, "{collided}");
+        let values: Vec<&str> = obj.values().filter_map(|v| v.as_str()).collect();
+        assert!(
+            values.contains(&"one") && values.contains(&"two"),
+            "{collided}"
+        );
+        assert!(!collided.to_string().contains("aaa"), "{collided}");
+        assert!(!collided.to_string().contains("bbb"), "{collided}");
     }
 }
