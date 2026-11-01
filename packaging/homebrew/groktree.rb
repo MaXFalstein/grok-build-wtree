@@ -23,9 +23,12 @@ class Groktree < Formula
   end
 
   test do
-    (testpath/"note.txt").write("hello\n")
+    # Homebrew writes .gitconfig and .bazelrc into testpath before the block.
+    # Scan a child directory so the count is only the file this test writes.
+    (testpath/"sample").mkpath
+    (testpath/"sample/note.txt").write("hello\n")
     require "json"
-    output = shell_output("#{bin}/groktree stats --json \"#{testpath}\"")
+    output = shell_output("#{bin}/groktree stats --json \"#{testpath}/sample\"")
     stats = JSON.parse(output)
     assert_equal 1, stats["paths"].fetch(0)["files"]
   end
