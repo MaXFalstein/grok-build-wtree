@@ -17,7 +17,7 @@ cargo install groktree
 From this git repository:
 
 ```sh
-cargo install --git https://github.com/MaXFalstein/grok-build-wtree --locked
+cargo install --git https://github.com/MaXFalstein/groktree --locked
 ```
 
 `Cargo.lock` is part of the repo, so `--locked` reproduces the build that the tests ran against.
@@ -28,7 +28,7 @@ A Homebrew formula lives at [`packaging/homebrew/groktree.rb`](packaging/homebre
 brew install maxfalstein/groktree/groktree
 ```
 
-Until then, install with `cargo install --git https://github.com/MaXFalstein/grok-build-wtree --locked`.
+Until then, install with `cargo install --git https://github.com/MaXFalstein/groktree --locked`.
 
 ## Safety guarantees
 

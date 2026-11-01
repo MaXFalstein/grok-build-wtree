@@ -9,7 +9,7 @@ rust-version = "1.88"
 description = "Read-only inspector for Grok Build worktrees, their origins, and git repos in synced folders"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/MaXFalstein/grok-build-wtree"
+repository = "https://github.com/MaXFalstein/groktree"
 keywords = ["git", "worktree", "grok", "tree"]
 categories = ["command-line-utilities", "development-tools"]
 
