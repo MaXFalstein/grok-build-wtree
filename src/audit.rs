@@ -56,6 +56,8 @@ pub struct Signals {
     pub size_changed: u64,
     /// Same-size files whose bytes differ. Used for non-git pairs.
     pub content_changed: u64,
+    /// The content check stopped before every date-changed file was hashed.
+    pub content_check_incomplete: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -141,7 +143,7 @@ pub fn decide(s: &Signals) -> Decision {
             diverged: false,
         };
     }
-    if s.conflicts > 0 || s.git_broken {
+    if s.conflicts > 0 || s.git_broken || s.content_check_incomplete {
         return Decision {
             class: Class::NeedsReview,
             diverged: false,
@@ -272,6 +274,7 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
     let mut only_origin = 0u64;
     let mut size_changed = 0u64;
     let mut content_changed = 0u64;
+    let mut content_check_incomplete = false;
     let mut mtime_drift = 0u64;
     if inspect && wt_probe == Probe::Dir && origin_probe == Probe::Dir {
         if let Some(origin) = &origin {
@@ -306,6 +309,8 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
                 let both_non_git = reasons.iter().any(|r| r == "git_not_a_repo:worktree")
                     && reasons.iter().any(|r| r == "git_not_a_repo:origin");
                 if both_non_git {
+                    content_check_incomplete =
+                        note_content_check_limit(diff.mtime_drift_paths.len(), &mut reasons);
                     content_changed = hash_drifted_files(
                         &worktree,
                         origin,
@@ -349,6 +354,7 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
         only_origin,
         size_changed,
         content_changed,
+        content_check_incomplete,
     });
     if decision.diverged {
         reasons.push("diverged".into());
@@ -370,6 +376,21 @@ fn classify_row(wt: &WorktreeRow, holds: &[PathBuf], deny: &DenyList, diag: &Dia
     }
 }
 
+/// Same-size files hashed per non-git pair. Past this, the class cannot be
+/// `Identical`: the rest were not read.
+const CONTENT_CHECK_LIMIT: usize = 10_000;
+
+/// Record that hashing stopped early. Returns true when any file was skipped.
+fn note_content_check_limit(total: usize, reasons: &mut Vec<String>) -> bool {
+    if total <= CONTENT_CHECK_LIMIT {
+        return false;
+    }
+    let skipped = total - CONTENT_CHECK_LIMIT;
+    reasons.push(format!("content_check_limit:{CONTENT_CHECK_LIMIT}"));
+    reasons.push(format!("content_unchecked:{skipped}"));
+    true
+}
+
 /// Hash same-size files whose mtimes differ. Returns how many differ or
 /// could not be read. Matching files stay in `mtime_drift`.
 fn hash_drifted_files(
@@ -382,7 +403,7 @@ fn hash_drifted_files(
     mtime_drift: &mut u64,
 ) -> u64 {
     let mut changed = 0u64;
-    for rel in rels.iter().take(10_000) {
+    for rel in rels.iter().take(CONTENT_CHECK_LIMIT) {
         let left = worktree.join(rel);
         let right = origin.join(rel);
         if deny.is_denied(&left) || deny.is_denied(&right) {
@@ -659,6 +680,7 @@ mod tests {
             only_origin: 0,
             size_changed: 0,
             content_changed: 0,
+            content_check_incomplete: false,
         };
         over(&mut s);
         s
@@ -694,6 +716,14 @@ mod tests {
             }))
             .class,
             Class::NeedsReview
+        );
+        assert_eq!(
+            decide(&sig(|s| s.content_check_incomplete = true)).class,
+            Class::NeedsReview
+        );
+        assert_ne!(
+            decide(&sig(|s| s.content_check_incomplete = true)).class,
+            Class::Identical
         );
         assert_eq!(
             decide(&sig(|s| s.git_modified = 1)).class,
@@ -743,5 +773,18 @@ mod tests {
             .class,
             Class::NeedsReview
         );
+    }
+
+    #[test]
+    fn content_check_limit_is_reported() {
+        let mut reasons = Vec::new();
+        assert!(!note_content_check_limit(CONTENT_CHECK_LIMIT, &mut reasons));
+        assert!(reasons.is_empty());
+        assert!(note_content_check_limit(
+            CONTENT_CHECK_LIMIT + 3,
+            &mut reasons
+        ));
+        assert!(reasons.iter().any(|r| r == "content_check_limit:10000"));
+        assert!(reasons.iter().any(|r| r == "content_unchecked:3"));
     }
 }

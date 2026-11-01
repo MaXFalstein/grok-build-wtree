@@ -205,7 +205,7 @@ Loads the same records as `grok`, then classifies every worktree against its ori
 
 | Class | Meaning |
 | --- | --- |
-| `Identical` | Same relative paths and the same bytes. For a git pair, `git status` supplies the content check. For a non-git pair, same-size files whose mtimes differ are hashed (the digest is not printed). Mtime drift with equal bytes is noted and does not change the class. A same-size edit is not Identical. |
+| `Identical` | Same relative paths and the same bytes. For a git pair, `git status` supplies the content check. For a non-git pair, same-size files whose mtimes differ are hashed (the digest is not printed). Mtime drift with equal bytes is noted and does not change the class. A same-size edit is not Identical. If more than 10,000 such files need hashing, the rest are not read and the class is `NeedsReview` with `content_check_limit` and `content_unchecked`. |
 | `OriginHasEverything` | Every worktree path is in the origin at the same size. The origin may have extra paths. |
 | `WorktreeHasUniqueWork` | The worktree has a path the origin lacks, a shared path whose size or kind changed, or git reports a modified or staged file. The origin has no private paths. |
 | `OriginMissing` | The worktree exists and the recorded origin does not. |
@@ -457,7 +457,7 @@ On the CLI, mtime differences are `changed`. `mtime_drift` is used by audit, whi
 }
 ```
 
-`class` is `Identical`, `OriginHasEverything`, `WorktreeHasUniqueWork`, `OriginMissing`, `NeedsReview`, or `OnHold`. Reason strings are stable tokens such as `held`, `origin_missing`, `worktree_symlink`, `conflicts:1`, `conflict:icloud:/path/notes 2.txt`, `git_missing:worktree:HEAD`, `git_not_a_repo:origin`, `diverged`, `only_worktree:N`, `size_changed:N`, `mtime_drift:N`, and `git_modified:N`. Example paths are capped at 10, conflict lines at 20. NDJSON uses `"type": "row"` and a summary that repeats `summary`.
+`class` is `Identical`, `OriginHasEverything`, `WorktreeHasUniqueWork`, `OriginMissing`, `NeedsReview`, or `OnHold`. Reason strings are stable tokens such as `held`, `origin_missing`, `worktree_symlink`, `conflicts:1`, `conflict:icloud:/path/notes 2.txt`, `git_missing:worktree:HEAD`, `git_not_a_repo:origin`, `diverged`, `only_worktree:N`, `size_changed:N`, `content_changed:N`, `content_differs:PATH`, `content_check_limit:10000`, `content_unchecked:N`, `mtime_drift:N`, and `git_modified:N`. Example paths are capped at 10, conflict lines at 20. NDJSON uses `"type": "row"` and a summary that repeats `summary`.
 
 ## Using wtree from AI assistant skills
 
