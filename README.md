@@ -525,3 +525,9 @@ Parallelism is level by level for `stats`, and across the top-level path list. N
 The deny list is `/Volumes` plus a hard prefix of `$HOME` (including `~/.Trash`). It will miss a privacy folder that lives somewhere else, and it will refuse a legitimate project that someone put on the Desktop. `--allow` is the explicit override. The tool would rather skip a directory than raise a macOS privacy prompt.
 
 Tests build SQLite fixtures with `rusqlite` (bundled). They do not need the `sqlite3` CLI. They do need `git` on `PATH`. An internal panic is caught and exits 3 instead of 101.
+
+## License
+
+Licensed under either of Apache License, Version 2.0 (LICENSE-APACHE) or MIT license (LICENSE-MIT) at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

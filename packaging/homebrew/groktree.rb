@@ -11,7 +11,7 @@
 class Groktree < Formula
   desc "Read-only inspector for Grok Build worktrees, origins, and git repos"
   homepage "https://github.com/MaXFalstein/grok-build-wtree"
-  license "MIT"
+  license any_of: ["MIT", "Apache-2.0"]
   version "0.1.0"
   head "https://github.com/MaXFalstein/grok-build-wtree.git", branch: "main"
 
